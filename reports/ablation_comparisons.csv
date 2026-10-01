@@ -1,0 +1,9 @@
+comparison,candidate,baseline,ll_diff,se,z,verdict
++QB (train 2006+),qb_no_market,base_no_market,-0.00621,0.00223,-2.7785,IMPROVES
++QB (train 2014+),qb_no_market_w14,base_no_market_w14,-0.0055,0.00256,-2.14703,IMPROVES
++injuries on top of QB (2014+),qb_inj_no_market_w14,qb_no_market_w14,-0.00177,0.00184,-0.96322,no clear change
++QB+injuries (2014+),qb_inj_no_market_w14,base_no_market_w14,-0.00727,0.00319,-2.27888,IMPROVES
+"+QB, spread included (2006+)",qb_with_spread,base_with_spread,0.00051,0.0008,0.63628,no clear change
+"+QB, spread included (2014+)",qb_with_spread_w14,base_with_spread_w14,0.00207,0.00131,1.583,no clear change
+"+injuries on top of QB, spread included",qb_inj_with_spread_w14,qb_with_spread_w14,0.00079,0.00146,0.53747,no clear change
+"+QB+injuries, spread included (2014+)",qb_inj_with_spread_w14,base_with_spread_w14,0.00286,0.002,1.43277,no clear change

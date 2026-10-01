@@ -1,84 +1,118 @@
-🏈 NFL Moneyline Predictor
-This project uses machine learning to predict the winners of upcoming NFL matchups based on team performance statistics and betting spread lines. Built with Python, XGBoost, and Streamlit, it provides an interactive dashboard to explore predictions week by week.
+# NFL Model vs. Sportsbook
 
-🔍 Overview
-The model is trained on historical NFL data from 2020–2024 and uses team-level statistics from 2022–2024 to simulate predictions for the 2025 season. It incorporates:
+Machine-learning win probabilities for NFL games, compared against sportsbook odds to surface
+bets where the model disagrees with the market. Player-prop models are planned (see Roadmap).
 
-Weighted team stats (favoring recent seasons)
+> **Status:** the honest walk-forward backtest (2015-2026) shows the model *matches* but does not
+> *beat* the closing market, and moneyline ROI is not distinguishable from zero. Current-starting-QB
+> features measurably improve a market-independent model (log loss 0.634 -> 0.628) but the market already
+> prices that in; injury-burden features add nothing clear. The value of the project right now is a
+> trustworthy evaluation harness - improve the model, re-run, see if it moves.
 
-Spread line data
+## Layout
 
-Yardage and turnover differentials
+```
+nfl_model/
+  config.py            paths, constants, team-name maps
+  data/loader.py       nflverse CSV downloads (cached in ./data)
+  features/            leak-free pre-game features
+    team_features.py     Elo + exponentially weighted team stats, rest, division
+    qb.py                current-starter rating (shrunk EPA/dropback), new-starter flag, expected starter
+    injuries.py          injury burden by position group, weighted by snap share (2014+)
+    pipeline.py          assembles the full table
+  models/win_prob.py   model zoo (logistic / gradient boosting, with or without the spread)
+  evaluation/          walk-forward backtest, log loss / Brier / calibration, feature ablation
+  betting/
+    odds.py            American odds <-> probability, vig removal
+    edge.py            edge, expected value, Kelly stake sizing
+    simulate.py        historical betting simulation (ROI + bootstrap CI)
+    picks.py           train on finished games, score the next slate
+    live_odds.py       optional live odds + line shopping (The Odds API)
+  cli.py               python -m nfl_model <command>
+tests/                 odds math, live-odds parsing, look-ahead-leak test
+model.py               Streamlit dashboard
+reports/               backtest outputs (CSVs, calibration plot)
+```
 
-Confidence scoring for each prediction
+## Setup
 
-Users can interactively select a week and filter predictions by confidence level.
+```
+pip install -r requirements.txt
+```
 
+## Commands
 
+```
+python -m nfl_model backtest [--gbm xgboost] [--leak-demo]   # probability quality vs baselines and market
+python -m nfl_model ablation                                  # do QB / injury features help? (paired tests)
+python -m nfl_model bets                                      # ROI by edge threshold, Kelly simulation
+python -m nfl_model picks [--week N] [--min-edge 0.03] [--live]
+python -m nfl_model test                                      # unit tests + leakage test
+streamlit run model.py                                        # dashboard
+```
 
-⚙️ Installation
+`--live` uses The Odds API for best-available prices across books; set `ODDS_API_KEY` first.
+(Its response parser is tested on a sample in the documented format; the HTTP call itself has not
+been run against the real service.) Without it, prices come from the nflverse schedule file.
 
-1. Clone the repository
-   
-git clone https://github.com/Webby234/NFL_Predictions
+## How evaluation avoids cheating
 
-2. Install Python 3.11 and pip
+* Features for a game use only games played **before** it. State is snapshotted for every game of a
+  week before any of that week's results are applied. `tests/test_no_leakage.py` erases a week's results
+  (and later injury reports, snap counts, QB box scores) and checks the week's features do not change.
+  It already caught one real (tiny) same-week leak, now fixed with a regression test in `test_features.py`.
+* Feature changes are judged by paired log-loss differences against a same-training-window baseline,
+  with the pass rule (below -2 standard errors) fixed in advance.
+* Seasons are predicted by models trained only on earlier seasons (walk-forward, no random split).
+* Every model and baseline is scored on the same games with log loss, Brier score and calibration,
+  and compared to the vig-free market probability with a paired standard error.
+* Betting simulations use closing prices (the sharpest available) and report bootstrap intervals;
+  many model/threshold combinations are shown, so isolated positive cells are expected by chance.
 
-https://www.python.org/downloads/release/python-3110/
-pip Documentation: https://pip.pypa.io/en/stable/installation/
+## Roadmap
 
-3. Install dependencies
+1. ~~Leak-free features and honest evaluation~~
+2. ~~Odds comparison, edge/EV/Kelly, betting backtest, dashboard~~
+3. ~~Quarterback and injury features~~ (QB helps a market-free model; neither beats the market)
+4. Where an edge could plausibly live: line movement / opening-vs-closing prices (needs historical odds
+   snapshots), pace/weather/totals, spread and totals markets (margin/total models)
+5. Player props (receiving/rushing/passing yards) with real prop lines
 
-pip install streamlit xgboost pandas scikit-learn nfl_data_py
+## Known limits
 
-
-
-🚀 Running the App
-
-streamlit run model.py
-This will launch the dashboard in your browser. You can select a week and adjust the confidence threshold to view predictions.
-
-
-
-📊 Features
-Predicts winners for upcoming 2025 NFL games
-
-Uses weighted team stats from 2022–2024
-
-Interactive week selector and confidence slider
-
-Displays recommended moneyline pick and model confidence
-
-
-
-🧠 Model Details
-Algorithm: XGBoost Classifier
-
-Training Data: Historical NFL regular season games (2020–2024)
-
-Features Used:
-
-Fantasy points
-
-Total yardage (passing + rushing + receiving)
-
-Turnovers
-
-Spread line
-
-Yardage differential
-
-Turnover differential
+* Historical QB/injury features use the actual starter and the final injury report (what the market knew at
+  kickoff). Live picks before the report is final see less - run them late in the week and check the
+  starters shown in the picks table.
+* Injury features need snap counts, which only exist from 2013, so they are tested on 2017+.
+* Live odds parsing is tested on a sample in the documented format but not against the real API.
 
 
+## Spreads, totals and data checks
 
-🌐 Deployment
-To deploy this app publicly, you can use:
+| Command | What it does |
+|---|---|
+| `python -m nfl_model check` | data sanity checks (duplicate games, line plausibility, stale cache, blank features) |
+| `python -m nfl_model lines` | spread/totals backtests, early-week-line test + CLV, line-move diagnostic (`reports/lines_*.csv`) |
+| `python -m nfl_model linepicks [--week N --min-edge PTS]` | model number vs listed spread/total for the upcoming week |
 
-Streamlit Cloud
+* `nfl_model/features/availability.py` tags every feature `early` (known from completed games) or `gameday`
+  (needs same-week injury/QB news or game-day weather). Tests against early-week lines must use `usable_at(features, "early")`;
+  a test fails if a feature is untagged.
+* `data/line_history.csv` is built from nflverse/nfldata git history (`nfl_model/data/line_history.py`, needs a blob-less
+  bare clone). Early-line "open" = earliest snapshot 5-8 days before kickoff, not the true first posting.
+* Findings so far: no spread/total model beats the closing line; apparent early-week edges came from same-week news features.
 
-Render
+## Player props (QB passing yards first)
 
-Heroku
+| Command | What it does |
+|---|---|
+| `python -m nfl_model props backtest` | walk-forward 2015+ accuracy/calibration -> `reports/props_qb_*.csv` |
+| `python -m nfl_model props predict [--week N]` | predicted mean + 10/25/50/75/90% quantiles for upcoming starters |
+| `python -m nfl_model props price --file lines.csv` | P(over/under), edge and EV for lines you type in (`player,line,over_odds,under_odds`) |
 
-GitHub Pages (for static content only)
+* Features (`nfl_model/props/features.py`) are leak-free, snapshotted before each week: QB form, attempts and
+  opponent pass defense are measured **relative to the league level at the time** (passing volume drifts by era;
+  absolute levels and uncapped career-game counts caused year-over-year bias, found and fixed), plus game-script
+  context from the market (implied points, spread, total relative to league level) and venue/weather.
+* Scored on outcomes only (MAE, pinball loss, interval coverage, calibration of P(over) at a naive line) - there is
+  no free historical prop pricing, so betting ROI is untested. Real lines can only be compared as you collect them.

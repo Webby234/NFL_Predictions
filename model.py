@@ -1,122 +1,196 @@
-import nfl_data_py as nfl
+"""Streamlit dashboard.  Run:  streamlit run model.py
+
+Thin UI over the `nfl_model` package - all modelling lives there.
+Reports shown in the backtest tabs come from:  python -m nfl_model backtest  /  bets
+"""
+from __future__ import annotations
+
+import os
+
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from xgboost import XGBClassifier
 import streamlit as st
 
-# Load schedule and weekly stats
-schedule = nfl.import_schedules(years=list(range(2020, 2025)))
-weekly = nfl.import_weekly_data(years=list(range(2022, 2025)))  # Use 2022–2024 for team stats
-weekly = weekly.rename(columns={'recent_team': 'team'})
+from nfl_model.betting.picks import DEFAULT_MODEL, picks_table, predict_upcoming, upcoming_games
+from nfl_model.config import REPORT_DIR, logo_url
+from nfl_model.features import load_feature_table
 
-# Filter for regular season games only
-schedule = schedule[schedule['game_type'] == 'REG']
+st.set_page_config(page_title="NFL Betting Model", page_icon="🏈", layout="wide")
+st.title("🏈 NFL Model vs. Sportsbook")
 
-# Weighted team stats: favor recent seasons
-weights = {2022: 1, 2023: 2, 2024: 3}
-weekly['weight'] = weekly['season'].map(weights)
-for col in ['fantasy_points', 'passing_yards', 'rushing_yards', 'receiving_yards', 'interceptions']:
-    weekly[col] = weekly[col] * weekly['weight']
+MODELS = ["logit_with_spread", "gbm_with_spread", "logit_no_market_qb", "logit_no_market", "gbm_no_market"]
 
-team_stats = weekly.groupby('team').agg({
-    'fantasy_points': 'sum',
-    'passing_yards': 'sum',
-    'rushing_yards': 'sum',
-    'receiving_yards': 'sum',
-    'interceptions': 'sum',
-    'weight': 'sum'
-}).reset_index()
 
-# Normalize by total weight
-for col in ['fantasy_points', 'passing_yards', 'rushing_yards', 'receiving_yards', 'interceptions']:
-    team_stats[col] = team_stats[col] / team_stats['weight']
+@st.cache_data(ttl=3600, show_spinner="Loading data and building features...")
+def get_features() -> pd.DataFrame:
+    return load_feature_table()
 
-# Merge team stats into historical schedule for training
-data = schedule.merge(team_stats, left_on='home_team', right_on='team', suffixes=('', '_home'))
-data = data.merge(team_stats, left_on='away_team', right_on='team', suffixes=('', '_away'))
 
-# Feature engineering
-data['spread_line'] = pd.to_numeric(data['spread_line'], errors='coerce')
-data['home_win'] = data['result'] > 0
-data['home_points'] = data['fantasy_points']
-data['away_points'] = data['fantasy_points_away']
-data['home_yards'] = data['passing_yards'] + data['rushing_yards'] + data['receiving_yards']
-data['away_yards'] = data['passing_yards_away'] + data['rushing_yards_away'] + data['receiving_yards_away']
-data['home_turnovers'] = data['interceptions']
-data['away_turnovers'] = data['interceptions_away']
-data['yard_diff'] = data['home_yards'] - data['away_yards']
-data['turnover_diff'] = data['away_turnovers'] - data['home_turnovers']  # fewer turnovers is better
+@st.cache_data(ttl=300, show_spinner="Fetching live odds...")
+def get_live(api_key: str) -> pd.DataFrame:
+    from nfl_model.betting.live_odds import live_odds_table
+    return live_odds_table(api_key)
 
-# Fill missing values
-data[['home_points', 'away_points', 'home_yards', 'away_yards', 'home_turnovers', 'away_turnovers',
-      'spread_line', 'yard_diff', 'turnover_diff']] = data[[
-    'home_points', 'away_points', 'home_yards', 'away_yards', 'home_turnovers', 'away_turnovers',
-    'spread_line', 'yard_diff', 'turnover_diff'
-]].fillna(0)
 
-# Prepare training data
-feature_cols = ['home_points', 'away_points', 'yard_diff', 'turnover_diff', 'spread_line']
-features = data[feature_cols]
-labels = data['home_win'].astype(int)
+def read_report(name: str):
+    path = REPORT_DIR / name
+    return pd.read_csv(path) if path.exists() else None
 
-# Train model
-if len(features) > 0 and labels.nunique() > 1:
-    X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2, random_state=42)
-    model = XGBClassifier(base_score=0.5)
-    model.fit(X_train, y_train)
 
-    # Load 2025 schedule and filter for future games
-    schedule_2025 = nfl.import_schedules(years=[2025])
-    future_games = schedule_2025[(schedule_2025['game_type'] == 'REG') & (schedule_2025['result'].isna())]
+# ----------------------------------------------------------------- sidebar ----
+with st.sidebar:
+    st.header("Settings")
+    model_name = st.selectbox("Model", MODELS, index=MODELS.index(DEFAULT_MODEL),
+                              help="'with_spread' models start from the market line; 'no_market' models are "
+                                   "independent of it and therefore disagree with it more (and, historically, lose more). "
+                                   "'_qb' adds the expected starting quarterback.")
+    min_edge = st.slider("Minimum edge (model prob - market prob)", 0.0, 0.10, 0.03, 0.005, format="%.3f")
+    bankroll = st.number_input("Bankroll ($)", min_value=10.0, value=1000.0, step=50.0)
+    kelly_fraction = st.slider("Kelly fraction", 0.05, 1.0, 0.25, 0.05,
+                               help="Fraction of the full-Kelly stake. Full Kelly is too aggressive when "
+                                    "probabilities are noisy.")
+    odds_source = st.radio("Odds source", ["Schedule file (nflverse)", "Live - The Odds API"])
+    api_key = ""
+    if odds_source.startswith("Live"):
+        api_key = st.text_input("Odds API key", value=os.environ.get("ODDS_API_KEY", ""), type="password")
 
-    # Streamlit dashboard
-    st.title("🏈 NFL Moneyline Predictor")
-    st.write("This dashboard uses weighted team stats and spread lines to predict winners for upcoming 2025 NFL matchups.")
+df = get_features()
+tab_bets, tab_model, tab_roi, tab_lines, tab_past = st.tabs(
+    ["💰 Best Bets", "📊 Model vs Market", "📈 Betting Backtest", "📐 Spreads & Totals", "📅 Past Predictions"])
 
-    # Week selector and confidence slider
-    available_weeks = sorted(future_games['week'].dropna().unique())
-    selected_week = st.selectbox("Select Week", available_weeks)
-    confidence_cutoff = st.slider("Minimum Confidence", min_value=0.50, max_value=1.00, value=0.60)
-
-    upcoming = future_games[future_games['week'] == selected_week]
-
-    # Merge team stats
-    upcoming = upcoming.merge(team_stats, left_on='home_team', right_on='team', suffixes=('', '_home'))
-    upcoming = upcoming.merge(team_stats, left_on='away_team', right_on='team', suffixes=('', '_away'))
-
-    # Feature engineering
-    upcoming['home_points'] = upcoming['fantasy_points']
-    upcoming['away_points'] = upcoming['fantasy_points_away']
-    upcoming['home_yards'] = upcoming['passing_yards'] + upcoming['rushing_yards'] + upcoming['receiving_yards']
-    upcoming['away_yards'] = upcoming['passing_yards_away'] + upcoming['rushing_yards_away'] + upcoming['receiving_yards_away']
-    upcoming['home_turnovers'] = upcoming['interceptions']
-    upcoming['away_turnovers'] = upcoming['interceptions_away']
-    upcoming['yard_diff'] = upcoming['home_yards'] - upcoming['away_yards']
-    upcoming['turnover_diff'] = upcoming['away_turnovers'] - upcoming['home_turnovers']
-    upcoming['spread_line'] = pd.to_numeric(upcoming['spread_line'], errors='coerce')
-
-    # Fill missing values
-    upcoming[feature_cols] = upcoming[feature_cols].fillna(0)
-
-    # Predict
-    X_upcoming = upcoming[feature_cols]
-    upcoming['home_win_pred'] = model.predict(X_upcoming)
-    upcoming['confidence'] = model.predict_proba(X_upcoming).max(axis=1)
-    upcoming['recommended_moneyline'] = upcoming.apply(
-        lambda row: row['home_team'] if row['home_win_pred'] == 1 else row['away_team'], axis=1
-    )
-
-    # Display predictions above confidence threshold
-    filtered = upcoming[upcoming['confidence'] >= confidence_cutoff]
-    if len(filtered) == 0:
-        st.write("No matchups meet the confidence threshold.")
+# ---------------------------------------------------------------- best bets ----
+with tab_bets:
+    roi_tbl = read_report("betting_thresholds.csv")
+    if roi_tbl is None:
+        st.warning("**Read this first.** No betting backtest found - run `python -m nfl_model bets` and check the "
+                   "historical ROI (and its confidence interval) before trusting any edge shown here.")
+    elif (roi_tbl["roi_ci_low"] > 0).any():
+        st.warning("**Read this first.** Some backtest cells show a positive ROI interval, but many model/threshold "
+                   "combinations were examined, so a few are expected by chance. Confirm on new data before staking real money.")
     else:
-        for _, row in filtered.iterrows():
-            st.subheader(f"{row['away_team']} @ {row['home_team']}")
-            st.write(f"**Recommended Pick**: {row['recommended_moneyline']}")
-            st.write(f"**Confidence**: {row['confidence']:.2f}")
-            st.write("---")
+        st.warning("**Read this first.** In the walk-forward backtest (closing prices) no model/threshold shows an ROI "
+                   "interval above zero, i.e. no moneyline edge distinguishable from luck. Treat these as model-vs-market "
+                   "disagreements to investigate, not proven profitable bets.")
+    pending = df[(df.game_type == "REG") & df.home_score.isna() & df.home_moneyline.notna()]
+    weeks = sorted(pending[pending.season == pending.season.min()].week.unique()) if not pending.empty else []
+    if not weeks:
+        st.info("No upcoming games with betting lines found.")
+    else:
+        week = st.selectbox("Week", weeks)
+        games = upcoming_games(df, week)
+        scored = predict_upcoming(df, games, model=model_name)
+        live = None
+        if odds_source.startswith("Live"):
+            try:
+                live = get_live(api_key)
+                st.caption(f"Live odds loaded for {len(live)} games - best available prices, consensus fair probability.")
+            except Exception as exc:                     # network / key problems shouldn't crash the page
+                st.error(f"Could not load live odds ({exc}). Showing schedule-file prices instead.")
+        cands, bets = picks_table(scored, min_edge, bankroll, kelly_fraction, live=live)
 
-else:
-    st.title("🏈 NFL Moneyline Predictor")
-    st.write("Insufficient data to train the model. Weekly stats may be missing or incomplete for recent seasons.")
+        st.subheader(f"Recommended bets - week {week}")
+        if bets.empty:
+            st.write("No side clears the minimum edge at the current prices.")
+        else:
+            for _, r in bets.iterrows():
+                c1, c2, c3 = st.columns([1, 4, 3])
+                c1.image(logo_url(r["team"]), width=56)
+                c2.markdown(f"**{r['team']} moneyline** ({r['moneyline']:+.0f}) &nbsp; _{r['away_team']} @ {r['home_team']}, "
+                            f"{r['gameday']:%a %b %d}_")
+                c3.markdown(f"Model **{r['model_prob']:.1%}** vs market {r['market_prob']:.1%} &nbsp;|&nbsp; "
+                            f"edge **{r['edge']:+.1%}** &nbsp;|&nbsp; EV {r['ev']:+.1%} &nbsp;|&nbsp; stake **${r['stake']:.2f}**")
+
+        with st.expander("All games - model vs market"):
+            g = scored[["gameday", "away_team", "home_team", "away_qb", "home_qb", "p_home", "spread_line"]].copy()
+            mk = cands[cands.side == "home"].set_index("game_id")
+            g["market_home_prob"] = scored["game_id"].map(mk["market_prob"]).to_numpy()
+            g["diff"] = g["p_home"] - g["market_home_prob"]
+            st.dataframe(g.rename(columns={"p_home": "model_home_prob"}).style.format(
+                {"model_home_prob": "{:.1%}", "market_home_prob": "{:.1%}", "diff": "{:+.1%}", "spread_line": "{:+.1f}"}),
+                use_container_width=True, hide_index=True)
+
+# ------------------------------------------------------------ model vs market ----
+with tab_model:
+    summary = read_report("backtest_summary.csv")
+    if summary is None:
+        st.info("Run `python -m nfl_model backtest` to generate this report.")
+    else:
+        st.markdown("Walk-forward probability quality: each season is predicted by a model trained only on "
+                    "earlier seasons. **Lower log loss is better**; `ll_vs_market` < 0 would mean beating the "
+                    "sportsbook.")
+        st.dataframe(summary[["model", "n", "log_loss", "brier", "accuracy", "auc", "ece", "ll_vs_market",
+                              "ll_vs_market_se"]].style.format(precision=4), use_container_width=True, hide_index=True)
+        by_season = read_report("backtest_by_season.csv")
+        if by_season is not None:
+            st.line_chart(by_season.set_index("season")[["elo", "logit_no_market", "market_ml", "logit_with_spread"]])
+        abl, abl_cmp = read_report("ablation_models.csv"), read_report("ablation_comparisons.csv")
+        if abl_cmp is not None:
+            st.markdown("**Do quarterback / injury features help?** Same-window paired comparisons "
+                        "(rule set in advance: improvement only if below -2 standard errors).")
+            st.dataframe(abl_cmp[["comparison", "ll_diff", "se", "z", "verdict"]].style.format(precision=4),
+                         use_container_width=True, hide_index=True)
+        if (REPORT_DIR / "calibration.png").exists():
+            st.image(str(REPORT_DIR / "calibration.png"), caption="Calibration: predicted vs actual home-win rate")
+
+# ------------------------------------------------------------ betting backtest ----
+with tab_roi:
+    thr, naive = read_report("betting_thresholds.csv"), read_report("betting_naive.csv")
+    if thr is None:
+        st.info("Run `python -m nfl_model bets` to generate this report.")
+    else:
+        st.markdown("Flat 1-unit bets at **closing** moneylines on the best side whenever the edge clears the "
+                    "threshold. ROI = profit per unit staked; the 95% interval is a bootstrap over bets.")
+        st.dataframe(thr.style.format(precision=4), use_container_width=True, hide_index=True)
+        if naive is not None:
+            st.markdown("**Reference - blind strategies** (their ROI is roughly the bookmaker's vig):")
+            st.dataframe(naive.rename(columns={naive.columns[0]: "strategy"}).style.format(precision=4),
+                         use_container_width=True, hide_index=True)
+        st.caption(f"{len(thr)} model/threshold combinations are shown; some positive cells are expected by chance.")
+
+# ------------------------------------------------------------ spreads & totals ----
+with tab_lines:
+    from nfl_model.betting.line_picks import upcoming_line_picks
+    lmse, lroi = read_report("lines_mse.csv"), read_report("lines_roi.csv")
+    st.subheader("This week: model number vs listed line")
+    edge_pts = st.slider("Minimum edge (points)", 0.0, 4.0, 1.0, 0.5, key="line_edge")
+    picks = upcoming_line_picks(df, week=None, min_edge=edge_pts)
+    if picks.empty:
+        st.info("No upcoming games with spreads and totals yet.")
+    else:
+        st.dataframe(picks, use_container_width=True, hide_index=True)
+    st.warning("Backtested spread/total edges are not distinguishable from zero ROI. Treat these as "
+               "disagreements to investigate, not sure bets.")
+    if lmse is None:
+        st.info("Run `python -m nfl_model lines` to generate the backtest reports.")
+    else:
+        st.markdown("**Accuracy vs the closing line** (squared error; `diff` > 0 means the model is worse than the line)")
+        st.dataframe(lmse.style.format(precision=3), use_container_width=True, hide_index=True)
+        if lroi is not None:
+            st.markdown("**Walk-forward ROI by edge threshold** (flat stakes at listed odds, 95% bootstrap interval)")
+            st.dataframe(lroi.style.format(precision=3), use_container_width=True, hide_index=True)
+    for nm, title in (("lines_early_clv.csv", "Early-week prices (5-8 days out) and closing-line value"),
+                      ("lines_move_attribution.csv", "What moves lines (diagnostic)")):
+        t = read_report(nm)
+        if t is not None:
+            st.markdown(f"**{title}**")
+            st.dataframe(t.style.format(precision=3), use_container_width=True, hide_index=True)
+
+# ----------------------------------------------------------- past predictions ----
+with tab_past:
+    preds = read_report("predictions.csv")
+    if preds is None:
+        st.info("Run `python -m nfl_model backtest` to generate walk-forward predictions.")
+    else:
+        season = st.selectbox("Season", sorted(preds.season.unique(), reverse=True))
+        ps = preds[preds.season == season]
+        week = st.selectbox("Week ", sorted(ps.week.unique()), key="past_week")
+        w = ps[ps.week == week].copy()
+        pcol = f"p_{model_name}"
+        w["model_pick"] = w.apply(lambda r: r.home_team if r[pcol] > 0.5 else r.away_team, axis=1)
+        w["winner"] = w.apply(lambda r: r.home_team if r.home_win == 1 else r.away_team, axis=1)
+        w["correct"] = w.model_pick == w.winner
+        st.subheader(f"Model {int(w.correct.sum())}-{int((~w.correct).sum())}  ({w.correct.mean():.0%})   |   "
+                     f"market favourite {int(((w.p_market_ml > 0.5) == (w.home_win == 1)).sum())}-"
+                     f"{int(((w.p_market_ml > 0.5) != (w.home_win == 1)).sum())}")
+        show = w[["away_team", "home_team", pcol, "p_market_ml", "model_pick", "winner", "correct"]]
+        st.dataframe(show.rename(columns={pcol: "model_home_prob", "p_market_ml": "market_home_prob"}).style.format(
+            {"model_home_prob": "{:.1%}", "market_home_prob": "{:.1%}"}), use_container_width=True, hide_index=True)

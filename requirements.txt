@@ -1,0 +1,7 @@
+pandas>=2.0
+numpy
+scikit-learn
+matplotlib
+streamlit>=1.30
+# optional, only for --gbm xgboost:
+# xgboost

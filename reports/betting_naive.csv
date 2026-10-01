@@ -1,0 +1,4 @@
+,bets,win_rate,avg_decimal_odds,avg_model_prob,units,roi,roi_ci_low,roi_ci_high
+bet_every_home_team,2932.0,0.5464,2.0359,0.5,-144.0529,-0.0491,-0.0835,-0.0121
+bet_every_favorite,3027.0,0.6581,1.513,0.5,-86.2447,-0.0285,-0.0543,-0.0028
+bet_every_underdog,2837.0,0.3313,3.2836,0.5,-128.01,-0.0451,-0.0999,0.0104
