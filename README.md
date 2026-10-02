@@ -30,7 +30,7 @@ nfl_model/
     live_odds.py       optional live odds + line shopping (The Odds API)
   cli.py               python -m nfl_model <command>
 tests/                 odds math, live-odds parsing, look-ahead-leak test
-model.py               Streamlit dashboard
+model.py               Streamlit betting board (4 tabs; markup in nfl_model/ui)
 reports/               backtest outputs (CSVs, calibration plot)
 ```
 
@@ -116,3 +116,34 @@ been run against the real service.) Without it, prices come from the nflverse sc
   context from the market (implied points, spread, total relative to league level) and venue/weather.
 * Scored on outcomes only (MAE, pinball loss, interval coverage, calibration of P(over) at a naive line) - there is
   no free historical prop pricing, so betting ROI is untested. Real lines can only be compared as you collect them.
+
+### Rushing, receiving, receptions, passing TDs, anytime TD
+
+`python -m nfl_model props {backtest|predict|price} --stat {rush_yds|rec_yds|receptions|pass_tds|anytime_td}`
+(`backtest --stat all` runs everything). Code: `nfl_model/props/skill.py` (features), `skill_eval.py` (configs + walk-forward),
+`skill_predict.py` (upcoming predictions + manual-line pricing). Yards use a mean + spread model, counts a negative-binomial,
+anytime TD a logistic model. Eligibility comes from *pre-game* expected volume; players with no stats row that week (DNP) are absent.
+Predictions infer participants from the last 4 weeks of usage (QBs from the schedule's listed starter) and drop players
+listed Out/Doubtful when that week's report exists - check inactives yourself before betting anything.
+Lines files: `player,line,over_odds,under_odds` (anytime_td: `player,odds[,no_odds]`).
+Backtest findings: small accuracy gains over form-only baselines for yards and anytime TD, none for receptions or passing TDs.
+
+## The app (`streamlit run model.py`)
+
+Built for someone placing bets, not studying the model. No sidebar, four tabs:
+
+| Tab | What it shows |
+|---|---|
+| Home | the ten bets where the model likes the price most this week, any market |
+| Moneyline & Spread | every game: moneyline, spread and total, with the model's win chance for each side |
+| Player Props | Passing / Rushing / Receiving: projection, likely range, fair line |
+| Touchdowns | anytime-touchdown chance and fair price; passing touchdowns |
+
+* `nfl_model/ui/board.py` puts every bet on one yardstick (win chance, break-even, edge, expected value).
+  Win chances are pulled toward the sportsbook's by the `TRUST` factors, because on past seasons most of the model's
+  disagreement with the book did not hold up (`python -m nfl_model.ui.calibrate` recomputes them -> `reports/ui_trust.csv`).
+  Props have no price history, so they use an assumed factor of 0.5.
+* Player props only reach the Home list after you type your sportsbook's lines into the "Add your sportsbook's lines"
+  box on each tab. They are saved to `lines/prop_lines.csv`, which doubles as the start of a real prop price history.
+* `nfl_model/ui/render.py` is plain HTML/CSS; `python -m nfl_model.ui.preview out.html` writes a static copy of the pages.
+* Colours come from `.streamlit/config.toml` plus the CSS in `render.py`. Backtests and diagnostics stay in the CLI.

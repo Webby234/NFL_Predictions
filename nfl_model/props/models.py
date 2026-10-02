@@ -32,12 +32,13 @@ class DistModel:
     c0: float
     c1: float
     z: np.ndarray          # sorted standardized residuals
+    floor: float = 15.0    # minimum sigma
 
     def mean(self, X: pd.DataFrame) -> np.ndarray:
         return self.mean_model.predict(X[self.feats])
 
     def sigma(self, mean: np.ndarray) -> np.ndarray:
-        return np.maximum(self.c0 + self.c1 * mean, 15.0)
+        return np.maximum(self.c0 + self.c1 * mean, self.floor)
 
     def quantile(self, mean: np.ndarray, q: float) -> np.ndarray:
         return mean + self.sigma(mean) * np.quantile(self.z, q)
@@ -48,11 +49,12 @@ class DistModel:
         return 1.0 - np.searchsorted(self.z, zl, side="right") / len(self.z)
 
 
-def fit_dist(train: pd.DataFrame, feats: list, target: str = "passing_yards", kind: str = "ridge") -> DistModel:
+def fit_dist(train: pd.DataFrame, feats: list, target: str = "passing_yards", kind: str = "ridge",
+             floor: float = 15.0) -> DistModel:
     m = make_mean_model(kind).fit(train[feats], train[target])
     mu = m.predict(train[feats]); res = train[target].values - mu
     A = np.column_stack([np.ones(len(mu)), mu]); c, *_ = np.linalg.lstsq(A, np.abs(res) * np.sqrt(np.pi / 2), rcond=None)
-    dm = DistModel(feats, m, float(c[0]), float(c[1]), np.array([0.0]))
+    dm = DistModel(feats, m, float(c[0]), float(c[1]), np.array([0.0]), floor)
     z = np.sort(res / dm.sigma(mu)); dm.z = z
     return dm
 
@@ -64,3 +66,69 @@ def _prob_under(self: DistModel, mean: np.ndarray, line) -> np.ndarray:
 
 
 DistModel.prob_under = _prob_under
+
+
+# ---------------------------------------------------------------- count and binary models ----
+from scipy.stats import nbinom, poisson                           # noqa: E402
+from sklearn.ensemble import HistGradientBoostingClassifier       # noqa: E402
+from sklearn.linear_model import LogisticRegression, PoissonRegressor  # noqa: E402
+
+
+@dataclass
+class CountModel:
+    """Negative-binomial counts: log-link Poisson regression for the mean, dispersion from training."""
+    feats: list
+    model: object
+    disp: float            # var = mu + disp * mu^2
+
+    def mean(self, X):
+        return self.model.predict(X[self.feats])
+
+    def _dist(self, mu):
+        mu = np.maximum(mu, 1e-6)
+        if self.disp < 1e-6:
+            return poisson(mu)
+        n = 1.0 / self.disp
+        return nbinom(n, n / (n + mu))
+
+    def prob_over(self, mu, line):
+        return self._dist(np.asarray(mu)).sf(np.floor(np.asarray(line, float)))
+
+    def prob_under(self, mu, line):
+        return self._dist(np.asarray(mu)).cdf(np.ceil(np.asarray(line, float)) - 1)
+
+    def pmf(self, mu, k):
+        return self._dist(np.asarray(mu)).pmf(k)
+
+
+def fit_count(train, feats, target, kind="poisson") -> CountModel:
+    if kind == "poisson":
+        m = make_pipeline(SimpleImputer(strategy="median"), StandardScaler(), PoissonRegressor(alpha=1.0, max_iter=500))
+    else:
+        m = make_pipeline(SimpleImputer(strategy="median"),
+                          HistGradientBoostingRegressor(loss="poisson", max_depth=3, learning_rate=0.04, max_iter=200,
+                                                        min_samples_leaf=60, l2_regularization=5.0))
+    m.fit(train[feats], train[target])
+    mu = m.predict(train[feats]); y = train[target].values
+    disp = max(0.0, float(np.sum((y - mu) ** 2 - mu) / np.sum(mu ** 2)))
+    return CountModel(feats, m, disp)
+
+
+@dataclass
+class BinaryModel:
+    feats: list
+    model: object
+
+    def prob(self, X):
+        return self.model.predict_proba(X[self.feats])[:, 1]
+
+
+def fit_binary(train, feats, target, kind="logit") -> BinaryModel:
+    if kind == "logit":
+        m = make_pipeline(SimpleImputer(strategy="median"), StandardScaler(), LogisticRegression(C=0.5, max_iter=1000))
+    else:
+        m = make_pipeline(SimpleImputer(strategy="median"),
+                          HistGradientBoostingClassifier(max_depth=3, learning_rate=0.04, max_iter=200,
+                                                         min_samples_leaf=80, l2_regularization=5.0))
+    m.fit(train[feats], train[target])
+    return BinaryModel(feats, m)

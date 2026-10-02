@@ -1,196 +1,140 @@
-"""Streamlit dashboard.  Run:  streamlit run model.py
+"""The betting board.  Run:  streamlit run model.py
 
-Thin UI over the `nfl_model` package - all modelling lives there.
-Reports shown in the backtest tabs come from:  python -m nfl_model backtest  /  bets
+Four pages for someone placing bets, not studying the model:
+  Home                 the ten best prices of the week, any market
+  Moneyline & Spread   every game: moneyline, spread and total
+  Player Props         passing, rushing and receiving projections
+  Touchdowns           anytime-touchdown chances and passing touchdowns
+
+All numbers come from nfl_model.ui.board; all markup from nfl_model.ui.render.
+Backtests and diagnostics live in the command line (python -m nfl_model ...), not here.
 """
 from __future__ import annotations
-
-import os
 
 import pandas as pd
 import streamlit as st
 
-from nfl_model.betting.picks import DEFAULT_MODEL, picks_table, predict_upcoming, upcoming_games
-from nfl_model.config import REPORT_DIR, logo_url
-from nfl_model.features import load_feature_table
+from nfl_model.ui import board as B, lines_store, render as R
 
-st.set_page_config(page_title="NFL Betting Model", page_icon="🏈", layout="wide")
-st.title("🏈 NFL Model vs. Sportsbook")
+st.set_page_config(page_title="NFL betting board", page_icon="🏈", layout="wide", initial_sidebar_state="collapsed")
+st.markdown(R.style_tag(), unsafe_allow_html=True)
 
-MODELS = ["logit_with_spread", "gbm_with_spread", "logit_no_market_qb", "logit_no_market", "gbm_no_market"]
+SHOW = 25      # players listed before "show all"
 
 
-@st.cache_data(ttl=3600, show_spinner="Loading data and building features...")
-def get_features() -> pd.DataFrame:
-    return load_feature_table()
+def html(s: str) -> None:
+    st.markdown(s, unsafe_allow_html=True)
 
 
-@st.cache_data(ttl=300, show_spinner="Fetching live odds...")
-def get_live(api_key: str) -> pd.DataFrame:
-    from nfl_model.betting.live_odds import live_odds_table
-    return live_odds_table(api_key)
+@st.cache_resource(ttl=3600, show_spinner="Getting this week's lines and projections...")
+def get_board() -> dict:
+    return B.build_board()
 
 
-def read_report(name: str):
-    path = REPORT_DIR / name
-    return pd.read_csv(path) if path.exists() else None
+def find(df: pd.DataFrame, key: str) -> pd.DataFrame:
+    """Search box plus a show-all switch; returns the rows to list."""
+    c1, c2 = st.columns([3, 1])
+    q = c1.text_input("Find a player or team", key=f"q_{key}", placeholder="Find a player or team",
+                      label_visibility="collapsed").strip().lower()
+    if q:
+        hit = df.player_display_name.str.lower().str.contains(q, regex=False) | \
+              df.team.map(lambda t: q in B.nick(t).lower() or q == str(t).lower())
+        return df[hit]
+    show_all = c2.checkbox(f"Show all {len(df)}", key=f"all_{key}") if len(df) > SHOW else True
+    return df if show_all else df.head(SHOW)
 
 
-# ----------------------------------------------------------------- sidebar ----
-with st.sidebar:
-    st.header("Settings")
-    model_name = st.selectbox("Model", MODELS, index=MODELS.index(DEFAULT_MODEL),
-                              help="'with_spread' models start from the market line; 'no_market' models are "
-                                   "independent of it and therefore disagree with it more (and, historically, lose more). "
-                                   "'_qb' adds the expected starting quarterback.")
-    min_edge = st.slider("Minimum edge (model prob - market prob)", 0.0, 0.10, 0.03, 0.005, format="%.3f")
-    bankroll = st.number_input("Bankroll ($)", min_value=10.0, value=1000.0, step=50.0)
-    kelly_fraction = st.slider("Kelly fraction", 0.05, 1.0, 0.25, 0.05,
-                               help="Fraction of the full-Kelly stake. Full Kelly is too aggressive when "
-                                    "probabilities are noisy.")
-    odds_source = st.radio("Odds source", ["Schedule file (nflverse)", "Live - The Odds API"])
-    api_key = ""
-    if odds_source.startswith("Live"):
-        api_key = st.text_input("Odds API key", value=os.environ.get("ODDS_API_KEY", ""), type="password")
-
-df = get_features()
-tab_bets, tab_model, tab_roi, tab_lines, tab_past = st.tabs(
-    ["💰 Best Bets", "📊 Model vs Market", "📈 Betting Backtest", "📐 Spreads & Totals", "📅 Past Predictions"])
-
-# ---------------------------------------------------------------- best bets ----
-with tab_bets:
-    roi_tbl = read_report("betting_thresholds.csv")
-    if roi_tbl is None:
-        st.warning("**Read this first.** No betting backtest found - run `python -m nfl_model bets` and check the "
-                   "historical ROI (and its confidence interval) before trusting any edge shown here.")
-    elif (roi_tbl["roi_ci_low"] > 0).any():
-        st.warning("**Read this first.** Some backtest cells show a positive ROI interval, but many model/threshold "
-                   "combinations were examined, so a few are expected by chance. Confirm on new data before staking real money.")
+def line_editor(stat: str, df: pd.DataFrame, saved: pd.DataFrame, yes_only: bool = False) -> None:
+    """Type in sportsbook lines for one market. Saved lines are priced and can reach the Home list."""
+    mine = saved[saved.stat == stat].drop_duplicates("player").set_index("player") if len(saved) else pd.DataFrame()
+    look = lambda col: df.player_display_name.map(mine[col]) if len(mine) else pd.Series([None] * len(df), index=df.index)
+    table = pd.DataFrame({"Player": df.player_display_name, "Team": df.team.map(B.nick)})
+    if yes_only:
+        table["Odds"] = look("over_odds")
     else:
-        st.warning("**Read this first.** In the walk-forward backtest (closing prices) no model/threshold shows an ROI "
-                   "interval above zero, i.e. no moneyline edge distinguishable from luck. Treat these as model-vs-market "
-                   "disagreements to investigate, not proven profitable bets.")
-    pending = df[(df.game_type == "REG") & df.home_score.isna() & df.home_moneyline.notna()]
-    weeks = sorted(pending[pending.season == pending.season.min()].week.unique()) if not pending.empty else []
-    if not weeks:
-        st.info("No upcoming games with betting lines found.")
-    else:
-        week = st.selectbox("Week", weeks)
-        games = upcoming_games(df, week)
-        scored = predict_upcoming(df, games, model=model_name)
-        live = None
-        if odds_source.startswith("Live"):
-            try:
-                live = get_live(api_key)
-                st.caption(f"Live odds loaded for {len(live)} games - best available prices, consensus fair probability.")
-            except Exception as exc:                     # network / key problems shouldn't crash the page
-                st.error(f"Could not load live odds ({exc}). Showing schedule-file prices instead.")
-        cands, bets = picks_table(scored, min_edge, bankroll, kelly_fraction, live=live)
+        table["Line"], table["Over odds"], table["Under odds"] = look("line"), look("over_odds"), look("under_odds")
+    with st.expander("Add your sportsbook's lines"):
+        st.caption("Type the odds your sportsbook offers for a touchdown (for example -130 or +145), then save."
+                   if yes_only else
+                   "Type your sportsbook's line next to a player, then save. Leave the odds blank to use -110.")
+        num = {c: st.column_config.NumberColumn(c, step=0.5 if c == "Line" else 1) for c in table.columns[2:]}
+        edited = st.data_editor(table.reset_index(drop=True), hide_index=True, disabled=["Player", "Team"],
+                                column_config=num, use_container_width=True, key=f"ed_{stat}")
+        if st.button("Save lines", key=f"save_{stat}"):
+            rows = pd.DataFrame({"player": edited["Player"],
+                                 "line": None if yes_only else edited["Line"],
+                                 "over_odds": edited["Odds"] if yes_only else edited["Over odds"],
+                                 "under_odds": None if yes_only else edited["Under odds"]})
+            n = lines_store.save(board["season"], board["week"], stat, rows)
+            st.session_state["saved_msg"] = f"Saved {n} line{'s' if n != 1 else ''}."
+            st.rerun()
 
-        st.subheader(f"Recommended bets - week {week}")
-        if bets.empty:
-            st.write("No side clears the minimum edge at the current prices.")
-        else:
-            for _, r in bets.iterrows():
-                c1, c2, c3 = st.columns([1, 4, 3])
-                c1.image(logo_url(r["team"]), width=56)
-                c2.markdown(f"**{r['team']} moneyline** ({r['moneyline']:+.0f}) &nbsp; _{r['away_team']} @ {r['home_team']}, "
-                            f"{r['gameday']:%a %b %d}_")
-                c3.markdown(f"Model **{r['model_prob']:.1%}** vs market {r['market_prob']:.1%} &nbsp;|&nbsp; "
-                            f"edge **{r['edge']:+.1%}** &nbsp;|&nbsp; EV {r['ev']:+.1%} &nbsp;|&nbsp; stake **${r['stake']:.2f}**")
 
-        with st.expander("All games - model vs market"):
-            g = scored[["gameday", "away_team", "home_team", "away_qb", "home_qb", "p_home", "spread_line"]].copy()
-            mk = cands[cands.side == "home"].set_index("game_id")
-            g["market_home_prob"] = scored["game_id"].map(mk["market_prob"]).to_numpy()
-            g["diff"] = g["p_home"] - g["market_home_prob"]
-            st.dataframe(g.rename(columns={"p_home": "model_home_prob"}).style.format(
-                {"model_home_prob": "{:.1%}", "market_home_prob": "{:.1%}", "diff": "{:+.1%}", "spread_line": "{:+.1f}"}),
-                use_container_width=True, hide_index=True)
+board = get_board()
+if not board["games"]:
+    html(R.header(board, sub="No upcoming games have posted lines yet. Lines usually appear early in the week."))
+    st.stop()
 
-# ------------------------------------------------------------ model vs market ----
-with tab_model:
-    summary = read_report("backtest_summary.csv")
-    if summary is None:
-        st.info("Run `python -m nfl_model backtest` to generate this report.")
-    else:
-        st.markdown("Walk-forward probability quality: each season is predicted by a model trained only on "
-                    "earlier seasons. **Lower log loss is better**; `ll_vs_market` < 0 would mean beating the "
-                    "sportsbook.")
-        st.dataframe(summary[["model", "n", "log_loss", "brier", "accuracy", "auc", "ece", "ll_vs_market",
-                              "ll_vs_market_se"]].style.format(precision=4), use_container_width=True, hide_index=True)
-        by_season = read_report("backtest_by_season.csv")
-        if by_season is not None:
-            st.line_chart(by_season.set_index("season")[["elo", "logit_no_market", "market_ml", "logit_with_spread"]])
-        abl, abl_cmp = read_report("ablation_models.csv"), read_report("ablation_comparisons.csv")
-        if abl_cmp is not None:
-            st.markdown("**Do quarterback / injury features help?** Same-window paired comparisons "
-                        "(rule set in advance: improvement only if below -2 standard errors).")
-            st.dataframe(abl_cmp[["comparison", "ll_diff", "se", "z", "verdict"]].style.format(precision=4),
-                         use_container_width=True, hide_index=True)
-        if (REPORT_DIR / "calibration.png").exists():
-            st.image(str(REPORT_DIR / "calibration.png"), caption="Calibration: predicted vs actual home-win rate")
+games, props = board["games"], board["props"]
+saved = lines_store.load(board["season"], board["week"])
+prop_bets = B.price_prop_lines(props, saved)
+of = lambda stat: [b for b in prop_bets if b.get("stat") == stat]
+if "saved_msg" in st.session_state:
+    st.toast(st.session_state.pop("saved_msg"))
 
-# ------------------------------------------------------------ betting backtest ----
-with tab_roi:
-    thr, naive = read_report("betting_thresholds.csv"), read_report("betting_naive.csv")
-    if thr is None:
-        st.info("Run `python -m nfl_model bets` to generate this report.")
-    else:
-        st.markdown("Flat 1-unit bets at **closing** moneylines on the best side whenever the edge clears the "
-                    "threshold. ROI = profit per unit staked; the 95% interval is a bootstrap over bets.")
-        st.dataframe(thr.style.format(precision=4), use_container_width=True, hide_index=True)
-        if naive is not None:
-            st.markdown("**Reference - blind strategies** (their ROI is roughly the bookmaker's vig):")
-            st.dataframe(naive.rename(columns={naive.columns[0]: "strategy"}).style.format(precision=4),
-                         use_container_width=True, hide_index=True)
-        st.caption(f"{len(thr)} model/threshold combinations are shown; some positive cells are expected by chance.")
+home, lines_tab, props_tab, td_tab = st.tabs(["Home", "Moneyline & Spread", "Player Props", "Touchdowns"])
 
-# ------------------------------------------------------------ spreads & totals ----
-with tab_lines:
-    from nfl_model.betting.line_picks import upcoming_line_picks
-    lmse, lroi = read_report("lines_mse.csv"), read_report("lines_roi.csv")
-    st.subheader("This week: model number vs listed line")
-    edge_pts = st.slider("Minimum edge (points)", 0.0, 4.0, 1.0, 0.5, key="line_edge")
-    picks = upcoming_line_picks(df, week=None, min_edge=edge_pts)
-    if picks.empty:
-        st.info("No upcoming games with spreads and totals yet.")
-    else:
-        st.dataframe(picks, use_container_width=True, hide_index=True)
-    st.warning("Backtested spread/total edges are not distinguishable from zero ROI. Treat these as "
-               "disagreements to investigate, not sure bets.")
-    if lmse is None:
-        st.info("Run `python -m nfl_model lines` to generate the backtest reports.")
-    else:
-        st.markdown("**Accuracy vs the closing line** (squared error; `diff` > 0 means the model is worse than the line)")
-        st.dataframe(lmse.style.format(precision=3), use_container_width=True, hide_index=True)
-        if lroi is not None:
-            st.markdown("**Walk-forward ROI by edge threshold** (flat stakes at listed odds, 95% bootstrap interval)")
-            st.dataframe(lroi.style.format(precision=3), use_container_width=True, hide_index=True)
-    for nm, title in (("lines_early_clv.csv", "Early-week prices (5-8 days out) and closing-line value"),
-                      ("lines_move_attribution.csv", "What moves lines (diagnostic)")):
-        t = read_report(nm)
-        if t is not None:
-            st.markdown(f"**{title}**")
-            st.dataframe(t.style.format(precision=3), use_container_width=True, hide_index=True)
+with home:
+    html(R.header(board, sub="The ten bets where the model likes the price most this week, across every market."))
+    html(R.top_list(B.top_bets(B.game_bets(games) + prop_bets), games))
+    html(R.note("<b>How to read it.</b> The yellow line is how often a bet has to win to break even at that price. "
+                "The dot is how often the model expects it to win. Green past the line is edge; grey means it falls short."))
+    html(R.note("<b>Keep it in proportion.</b> On past seasons this model has not beaten sportsbook prices after the "
+                "vig, so the win chances shown are already pulled most of the way toward the sportsbook's. "
+                "Use the list as leads to look into, not sure things."))
+    if not prop_bets:
+        html(R.note("Player props and touchdowns join this list once you add your sportsbook's lines on those tabs."))
 
-# ----------------------------------------------------------- past predictions ----
-with tab_past:
-    preds = read_report("predictions.csv")
-    if preds is None:
-        st.info("Run `python -m nfl_model backtest` to generate walk-forward predictions.")
+with lines_tab:
+    html(R.section("Every game this week",
+                   "Percentages are the model's chance each bet wins. A green box marks a price the model sees value in."))
+    for g in games:
+        html(R.game_card(g))
+
+with props_tab:
+    passing, rushing, receiving = st.tabs(["Passing", "Rushing", "Receiving"])
+    YARDS_LEAD = ("Projection is the average outcome. The bar shows the likely range, and the fair line is the number "
+                  "the model sees as a coin flip: lean over if your sportsbook's line is lower, under if it is higher.")
+    for tab, stat, title in ((passing, "qb_pass_yds", "Passing yards"), (rushing, "rush_yds", "Rushing yards"),
+                             (receiving, "rec_yds", "Receiving yards")):
+        with tab:
+            df = props.get(stat)
+            html(R.section(title, YARDS_LEAD))
+            if df is None or not len(df):
+                html(R.yards_table(None, []))
+            else:
+                html(R.yards_table(find(df, stat), of(stat)))
+                line_editor(stat, df, saved)
+            if stat == "rec_yds" and props.get("receptions") is not None:
+                rc = props["receptions"]
+                html(R.section("Receptions", "Projected catches and the chance of going over the nearest line."))
+                html(R.count_table(find(rc, "receptions"), of("receptions"), "catches"))
+                line_editor("receptions", rc, saved)
+    html(R.note("Player lists come from who has played recently. Check injury reports and inactives before you bet."))
+
+with td_tab:
+    td = props.get("anytime_td")
+    html(R.section("Anytime touchdown",
+                   "Chance each player scores a rushing or receiving touchdown. Fair price is the break-even odds: "
+                   "a sportsbook paying more than that is a price the model likes."))
+    if td is None or not len(td):
+        html(R.td_table(None, []))
     else:
-        season = st.selectbox("Season", sorted(preds.season.unique(), reverse=True))
-        ps = preds[preds.season == season]
-        week = st.selectbox("Week ", sorted(ps.week.unique()), key="past_week")
-        w = ps[ps.week == week].copy()
-        pcol = f"p_{model_name}"
-        w["model_pick"] = w.apply(lambda r: r.home_team if r[pcol] > 0.5 else r.away_team, axis=1)
-        w["winner"] = w.apply(lambda r: r.home_team if r.home_win == 1 else r.away_team, axis=1)
-        w["correct"] = w.model_pick == w.winner
-        st.subheader(f"Model {int(w.correct.sum())}-{int((~w.correct).sum())}  ({w.correct.mean():.0%})   |   "
-                     f"market favourite {int(((w.p_market_ml > 0.5) == (w.home_win == 1)).sum())}-"
-                     f"{int(((w.p_market_ml > 0.5) != (w.home_win == 1)).sum())}")
-        show = w[["away_team", "home_team", pcol, "p_market_ml", "model_pick", "winner", "correct"]]
-        st.dataframe(show.rename(columns={pcol: "model_home_prob", "p_market_ml": "market_home_prob"}).style.format(
-            {"model_home_prob": "{:.1%}", "market_home_prob": "{:.1%}"}), use_container_width=True, hide_index=True)
+        html(R.td_table(find(td, "anytime_td"), of("anytime_td")))
+        line_editor("anytime_td", td, saved, yes_only=True)
+    ptd = props.get("pass_tds")
+    if ptd is not None and len(ptd):
+        html(R.section("Passing touchdowns", "Projected touchdown passes for each starting quarterback."))
+        html(R.count_table(ptd, of("pass_tds"), "touchdown passes"))
+        html(R.note("Passing-touchdown chances have run too confident in testing, so they are left out of the Home list."))
+    html(R.note("Player lists come from who has played recently. Check injury reports and inactives before you bet."))

@@ -151,39 +151,68 @@ def cmd_linepicks(args) -> None:
 
 
 def cmd_props(args) -> None:
-    """QB passing-yards props: backtest | predict | price --file lines.csv"""
+    """Player props. python -m nfl_model props {backtest|predict|price} [--stat NAME] [--file lines.csv]
+
+    stats: qb_pass_yds (default), rush_yds, rec_yds, receptions, pass_tds, anytime_td, all (backtest only)
+    """
+    stat = args.stat
+    if stat == "all" and args.action != "backtest":
+        sys.exit("--stat all only works with backtest")
     if args.action == "backtest":
-        from .props import evaluate as E
-        from .props.features import build_qb_prop_table
-        out, _ = E.walk_forward(build_qb_prop_table())
-        summ = E.summarize(out)
-        summ.round(4).to_csv(REPORT_DIR / "props_qb_summary.csv", index=False)
-        E.by_season(out).to_csv(REPORT_DIR / "props_qb_by_season.csv")
-        E.over_calibration(out, "ridge_with_lines").to_csv(REPORT_DIR / "props_qb_calibration.csv")
-        print(summ.round(3).to_string(index=False))
-        print("\nOver-probability calibration at a naive line (baseline mean rounded to .5):")
-        print(E.over_calibration(out, "ridge_with_lines"))
+        if stat in ("qb_pass_yds", "all"):
+            from .props import evaluate as E
+            from .props.features import build_qb_prop_table
+            out, _ = E.walk_forward(build_qb_prop_table())
+            summ = E.summarize(out)
+            summ.round(4).to_csv(REPORT_DIR / "props_qb_summary.csv", index=False)
+            E.by_season(out).to_csv(REPORT_DIR / "props_qb_by_season.csv")
+            E.over_calibration(out, "ridge_with_lines").to_csv(REPORT_DIR / "props_qb_calibration.csv")
+            print("== qb_pass_yds"); print(summ.round(3).to_string(index=False))
+            print(E.over_calibration(out, "ridge_with_lines"))
+        if stat != "qb_pass_yds":
+            from .props import skill_eval as S
+            names = list(S.STATS) if stat == "all" else [stat]
+            table = S.build_skill_table()
+            summaries = []
+            for k in names:
+                out = S.walk_forward(table, S.STATS[k]); summ = S.summarize(out, S.STATS[k])
+                summaries.append(summ); cal = S.calibration(out, S.STATS[k])
+                cal.to_csv(REPORT_DIR / f"props_{k}_calibration.csv")
+                print(f"== {k}"); print(summ.round(4).to_string(index=False)); print(cal)
+            pd.concat(summaries).round(5).to_csv(REPORT_DIR / "props_skill_summary.csv", index=False)
         print("\nScored on outcomes only: no historical prop prices exist for free, so ROI is untested.")
         return
-    from .props.predict import predict_upcoming, price_lines
-    pred = predict_upcoming(args.week)
-    if pred.empty:
-        print("No upcoming games with listed quarterbacks."); return
-    if args.action == "predict":
-        print(pred.drop(columns=["season"]).to_string(index=False))
-        print("\nqb_games=0 means a QB new to the data: treat with extra caution.")
+    if stat == "qb_pass_yds":
+        from .props.predict import predict_upcoming, price_lines
+        pred = predict_upcoming(args.week)
+        if pred.empty:
+            print("No upcoming games with listed quarterbacks."); return
+        if args.action == "predict":
+            print(pred.drop(columns=["season"]).to_string(index=False))
+            print("\nqb_games=0 means a QB new to the data: treat with extra caution.")
+            return
     else:
-        if not args.file:
-            sys.exit("price needs --file lines.csv with columns: player,line,over_odds,under_odds")
-        res = price_lines(pred, pd.read_csv(args.file), args.min_edge)
-        print(res.to_string(index=False))
-        print("\nUntested against real prop prices - treat as a second opinion, not a bet signal.")
+        from .props import skill_predict as SP
+        table, up = SP.upcoming_table(args.week)
+        if up is None:
+            print("No upcoming games."); return
+        pred = SP.predict_stat(table, up, stat)
+        if args.action == "predict":
+            print(pred.to_string(index=False))
+            print("\nParticipants are inferred from recent usage; injuries only if the report is published. Check inactives.")
+            return
+        price_lines = SP.price_lines
+    if not args.file:
+        sys.exit("price needs --file lines.csv (player,line,over_odds,under_odds; anytime_td: player,odds[,no_odds])")
+    res = price_lines(pred, pd.read_csv(args.file), args.min_edge)
+    print(res.to_string(index=False))
+    print("\nUntested against real prop prices - treat as a second opinion, not a bet signal.")
 
 
 def cmd_test(args) -> None:
     import subprocess
     sys.exit(max(subprocess.call([sys.executable, "-m", m]) for m in
-                 ("tests.test_odds", "tests.test_live_odds", "tests.test_features", "tests.test_lines", "tests.test_data_checks", "tests.test_props", "tests.test_no_leakage")))
+                 ("tests.test_odds", "tests.test_live_odds", "tests.test_features", "tests.test_lines", "tests.test_data_checks", "tests.test_props", "tests.test_skill_props", "tests.test_ui", "tests.test_no_leakage")))
 
 
 def main(argv=None) -> None:
@@ -199,6 +228,8 @@ def main(argv=None) -> None:
             p.add_argument("--leak-demo", action="store_true")
         if name == "props":
             p.add_argument("action", choices=["backtest", "predict", "price"])
+            p.add_argument("--stat", default="qb_pass_yds",
+                           choices=["qb_pass_yds", "rush_yds", "rec_yds", "receptions", "pass_tds", "anytime_td", "all"])
             p.add_argument("--week", type=int)
             p.add_argument("--file")
             p.add_argument("--min-edge", type=float, default=0.03)
