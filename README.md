@@ -1,188 +1,257 @@
-# NFL Model vs. Sportsbook
+# NFL Betting Board
 
-Machine-learning win probabilities for NFL games, compared against sportsbook odds to surface
-bets where the model disagrees with the market. Player-prop models are planned (see Roadmap).
+A local web app that predicts NFL games and player stats, compares them with sportsbook lines, and shows
+where the price looks best each week: moneylines, spreads, totals, player props, touchdowns and teasers.
+It runs on your own computer, uses free public data, and needs no account or API key.
 
-> **Status:** the honest walk-forward backtest (2015-2026) shows the model *matches* but does not
-> *beat* the closing market, and moneyline ROI is not distinguishable from zero. Current-starting-QB
-> features measurably improve a market-independent model (log loss 0.634 -> 0.628) but the market already
-> prices that in; injury-burden features add nothing clear. The value of the project right now is a
-> trustworthy evaluation harness - improve the model, re-run, see if it moves.
+> **Read this first.** On past seasons the model has **not** beaten sportsbook closing lines. The app says so on
+> its own pages and shows its record in the Accuracy tab. Treat everything it shows as a lead to check, not a
+> sure thing. Nothing here is betting advice. Only bet what you can afford to lose, and only where it is legal for you.
 
-## Layout
+## Contents
 
-```
-nfl_model/
-  config.py            paths, constants, team-name maps
-  data/loader.py       nflverse CSV downloads (cached in ./data)
-  features/            leak-free pre-game features
-    team_features.py     Elo + exponentially weighted team stats, rest, division
-    qb.py                current-starter rating (shrunk EPA/dropback), new-starter flag, expected starter
-    injuries.py          injury burden by position group, weighted by snap share (2014+)
-    pipeline.py          assembles the full table
-  models/win_prob.py   model zoo (logistic / gradient boosting, with or without the spread)
-  evaluation/          walk-forward backtest, log loss / Brier / calibration, feature ablation
-  betting/
-    odds.py            American odds <-> probability, vig removal
-    edge.py            edge, expected value, Kelly stake sizing
-    simulate.py        historical betting simulation (ROI + bootstrap CI)
-    picks.py           train on finished games, score the next slate
-    live_odds.py       optional live odds + line shopping (The Odds API)
-  cli.py               python -m nfl_model <command>
-tests/                 odds math, live-odds parsing, look-ahead-leak test
-model.py               Streamlit betting board (4 tabs; markup in nfl_model/ui)
-reports/               backtest outputs (CSVs, calibration plot)
-```
+- [What you get](#what-you-get)
+- [Quick start](#quick-start)
+- [Using the app each week](#using-the-app-each-week)
+- [How to read the pages](#how-to-read-the-pages)
+- [Command line reference](#command-line-reference)
+- [Where your files live](#where-your-files-live)
+- [How it works](#how-it-works)
+- [How accurate is it](#how-accurate-is-it)
+- [Project layout](#project-layout)
+- [Running the tests](#running-the-tests)
+- [Troubleshooting](#troubleshooting)
+- [Known limits](#known-limits)
+- [Data and credits](#data-and-credits)
 
-## Setup
-
-```
-pip install -r requirements.txt
-```
-
-## Commands
-
-```
-python -m nfl_model backtest [--gbm xgboost] [--leak-demo]   # probability quality vs baselines and market
-python -m nfl_model ablation                                  # do QB / injury features help? (paired tests)
-python -m nfl_model bets                                      # ROI by edge threshold, Kelly simulation
-python -m nfl_model picks [--week N] [--min-edge 0.03] [--live]
-python -m nfl_model test                                      # unit tests + leakage test
-streamlit run model.py                                        # dashboard
-```
-
-`--live` uses The Odds API for best-available prices across books; set `ODDS_API_KEY` first.
-(Its response parser is tested on a sample in the documented format; the HTTP call itself has not
-been run against the real service.) Without it, prices come from the nflverse schedule file.
-
-## How evaluation avoids cheating
-
-* Features for a game use only games played **before** it. State is snapshotted for every game of a
-  week before any of that week's results are applied. `tests/test_no_leakage.py` erases a week's results
-  (and later injury reports, snap counts, QB box scores) and checks the week's features do not change.
-  It already caught one real (tiny) same-week leak, now fixed with a regression test in `test_features.py`.
-* Feature changes are judged by paired log-loss differences against a same-training-window baseline,
-  with the pass rule (below -2 standard errors) fixed in advance.
-* Seasons are predicted by models trained only on earlier seasons (walk-forward, no random split).
-* Every model and baseline is scored on the same games with log loss, Brier score and calibration,
-  and compared to the vig-free market probability with a paired standard error.
-* Betting simulations use closing prices (the sharpest available) and report bootstrap intervals;
-  many model/threshold combinations are shown, so isolated positive cells are expected by chance.
-
-## Roadmap
-
-1. ~~Leak-free features and honest evaluation~~
-2. ~~Odds comparison, edge/EV/Kelly, betting backtest, dashboard~~
-3. ~~Quarterback and injury features~~ (QB helps a market-free model; neither beats the market)
-4. Where an edge could plausibly live: line movement / opening-vs-closing prices (needs historical odds
-   snapshots), pace/weather/totals, spread and totals markets (margin/total models)
-5. Player props (receiving/rushing/passing yards) with real prop lines
-
-## Known limits
-
-* Historical QB/injury features use the actual starter and the final injury report (what the market knew at
-  kickoff). Live picks before the report is final see less - run them late in the week and check the
-  starters shown in the picks table.
-* Injury features need snap counts, which only exist from 2013, so they are tested on 2017+.
-* Live odds parsing is tested on a sample in the documented format but not against the real API.
-
-
-## Spreads, totals and data checks
-
-| Command | What it does |
-|---|---|
-| `python -m nfl_model check` | data sanity checks (duplicate games, line plausibility, stale cache, blank features) |
-| `python -m nfl_model lines` | spread/totals backtests, early-week-line test + CLV, line-move diagnostic (`reports/lines_*.csv`) |
-| `python -m nfl_model linepicks [--week N --min-edge PTS]` | model number vs listed spread/total for the upcoming week |
-
-* `nfl_model/features/availability.py` tags every feature `early` (known from completed games) or `gameday`
-  (needs same-week injury/QB news or game-day weather). Tests against early-week lines must use `usable_at(features, "early")`;
-  a test fails if a feature is untagged.
-* `data/line_history.csv` is built from nflverse/nfldata git history (`nfl_model/data/line_history.py`, needs a blob-less
-  bare clone). Early-line "open" = earliest snapshot 5-8 days before kickoff, not the true first posting.
-* Findings so far: no spread/total model beats the closing line; apparent early-week edges came from same-week news features.
-
-## Player props (QB passing yards first)
-
-| Command | What it does |
-|---|---|
-| `python -m nfl_model props backtest` | walk-forward 2015+ accuracy/calibration -> `reports/props_qb_*.csv` |
-| `python -m nfl_model props predict [--week N]` | predicted mean + 10/25/50/75/90% quantiles for upcoming starters |
-| `python -m nfl_model props price --file lines.csv` | P(over/under), edge and EV for lines you type in (`player,line,over_odds,under_odds`) |
-
-* Features (`nfl_model/props/features.py`) are leak-free, snapshotted before each week: QB form, attempts and
-  opponent pass defense are measured **relative to the league level at the time** (passing volume drifts by era;
-  absolute levels and uncapped career-game counts caused year-over-year bias, found and fixed), plus game-script
-  context from the market (implied points, spread, total relative to league level) and venue/weather.
-* Scored on outcomes only (MAE, pinball loss, interval coverage, calibration of P(over) at a naive line) - there is
-  no free historical prop pricing, so betting ROI is untested. Real lines can only be compared as you collect them.
-
-### Rushing, receiving, receptions, passing TDs, anytime TD
-
-`python -m nfl_model props {backtest|predict|price} --stat {rush_yds|rec_yds|receptions|pass_tds|anytime_td}`
-(`backtest --stat all` runs everything). Code: `nfl_model/props/skill.py` (features), `skill_eval.py` (configs + walk-forward),
-`skill_predict.py` (upcoming predictions + manual-line pricing). Yards use a mean + spread model, counts a negative-binomial,
-anytime TD a logistic model. Eligibility comes from *pre-game* expected volume; players with no stats row that week (DNP) are absent.
-Predictions infer participants from the last 4 weeks of usage (QBs from the schedule's listed starter) and drop players
-listed Out/Doubtful when that week's report exists - check inactives yourself before betting anything.
-Lines files: `player,line,over_odds,under_odds` (anytime_td: `player,odds[,no_odds]`).
-Backtest findings: small accuracy gains over form-only baselines for yards and anytime TD, none for receptions or passing TDs.
-
-## The app (`streamlit run model.py`)
-
-Built for someone placing bets, not studying the model. No sidebar, six tabs:
+## What you get
 
 | Tab | What it shows |
 |---|---|
-| Home | the ten bets where the model likes the price most this week, any market |
-| Moneyline & Spread | every game: moneyline, spread and total, with the model's win chance for each side |
-| Player Props | Passing / Rushing / Receiving: projection, likely range, fair line |
-| Touchdowns | anytime-touchdown chance and fair price; passing touchdowns |
-| Teasers | this week's qualifying underdog teaser legs, their record since 2006 and the price needed |
-| Accuracy | past weeks for each page above, chosen from a dropdown (`nfl_model/ui/history.py`) |
+| **Home** | The best-priced bets of the week across every market. The best three come first, then the next seven. |
+| **Moneyline & Spread** | Every game: moneyline, spread and total, with the model's pick and win chance for each. |
+| **Player Props** | Passing, rushing and receiving: projection, likely range and a fair line for each player. |
+| **Touchdowns** | Each player's chance to score and the break-even odds, plus passing touchdowns. |
+| **Teasers** | This week's underdog teaser legs that have paid historically, and the price you need. |
+| **Accuracy** | How every page above did in past weeks, this season and last season. |
 
-* `nfl_model/ui/board.py` puts every bet on one yardstick (win chance, break-even, edge, expected value).
-  Win chances are pulled toward the sportsbook's by the `TRUST` factors, because on past seasons most of the model's
-  disagreement with the book did not hold up (`python -m nfl_model.ui.calibrate` recomputes them -> `reports/ui_trust.csv`).
-  Props have no price history, so they use an assumed factor of 0.5.
-* Player props only reach the Home list after you type your sportsbook's lines into the "Add your sportsbook's lines"
-  box on each tab. They are saved to `lines/prop_lines.csv`, which doubles as the start of a real prop price history.
-* `nfl_model/ui/render.py` is plain HTML/CSS; `python -m nfl_model.ui.preview out.html` writes a static copy of the pages.
-* Colours come from `.streamlit/config.toml` plus the CSS in `render.py`. Backtests and diagnostics stay in the CLI.
+## Quick start
 
-## Tracking the app's picks
+### 1. What you need
 
-Opening the app logs the week's Home list (and every prop line you priced) to `lines/picks_log.csv`; the last snapshot
-before a game is the one that counts. `python -m nfl_model track` grades them once games are played
-(win / loss / push / void, profit on 1 unit each) and writes `reports/picks_graded.csv`. The Home page shows the running
-record once anything has settled. This is the only forward test with real prices, and it needs hundreds of bets to mean much.
+- **Python 3.10 or newer** (built and tested on 3.11). Check with `python --version`.
+  Download from [python.org](https://www.python.org/downloads/). On Windows, tick "Add Python to PATH" in the installer.
+- **Git**, to download the project ([git-scm.com](https://git-scm.com/downloads)). Or use GitHub's "Download ZIP" button.
+- **An internet connection.** The app downloads game and player data, team logos and fonts.
+- About **60 MB** of free disk space for the data, plus room for the Python packages.
 
-## Prop inputs that were tested (walk-forward, kept only if better by more than 2 standard errors)
+### 2. Download the project
 
-| Input | Kept for | Dropped for |
+```
+git clone https://github.com/Webby234/NFL_Predicitions.git
+cd NFL_Predicitions
+```
+
+### 3. Install the dependencies
+
+A virtual environment keeps these packages separate from the rest of your computer. It is optional but recommended.
+
+Windows:
+
+```
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+macOS or Linux:
+
+```
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 4. Start the app
+
+```
+streamlit run model.py
+```
+
+Your browser opens at <http://localhost:8501>. If it does not, paste that address into your browser.
+To stop the app, press `Ctrl+C` in the terminal.
+
+**The first start is slow.** It downloads about 40 MB of data and builds the week's projections, which takes
+one to two minutes. Later starts take about half a minute, and the data refreshes itself as games are played.
+
+## Using the app each week
+
+1. **Open the app before the games.** Opening it saves that week's Home list so it can be graded later.
+2. **Enter your own sportsbook's lines** (optional, and worth doing). On the Moneyline & Spread tab, open
+   "Enter your sportsbook's lines". The table starts with the listed lines. Change any number to what your
+   sportsbook offers and press **Save lines**. A better number than the listed one shows up as extra edge.
+3. **Enter prop lines** (optional). On Player Props and Touchdowns, open "Add your sportsbook's lines" and type the
+   line and odds next to a player. Props only appear on the Home list after you do this, because there is no free
+   source of prop prices.
+4. **Check the Teasers tab** for qualifying legs and the price you need.
+5. **After the games,** open the Accuracy tab, or run `python -m nfl_model track`, to see how the picks did.
+
+## How to read the pages
+
+**The meter on Home.** The yellow line is how often a bet must win to break even at that price. The dot is how
+often the model expects it to win. Green past the line is edge. Grey means the bet falls short of break-even.
+
+**Odds** are American odds. `-110` means you bet 110 to win 100. `+150` means you bet 100 to win 150.
+
+**Green boxes on Moneyline & Spread** mark the model's pick in each market. A yellow **Value** chip marks any
+side whose price pays more than the model's win chance requires. On a moneyline the pick and the value can be
+different teams: the model can expect the favorite to win while the underdog's price is the better bet.
+
+**Fair line** on Player Props is the number the model sees as a coin flip. Lean over if your sportsbook's line is
+lower, under if it is higher.
+
+**Fair price** on Touchdowns is the break-even odds. A sportsbook paying more than that is a price the model likes.
+
+**Home spread** in the lines table is the home team's number as a sportsbook shows it: `-2.5` means the home team
+is favored by 2.5.
+
+## Command line reference
+
+Everything the app shows, and the tests behind it, can also be run from a terminal in the project folder.
+
+| Command | What it does |
+|---|---|
+| `streamlit run model.py` | Start the app. |
+| `python -m nfl_model track` | Grade the picks the app has logged. Writes `reports/picks_graded.csv`. |
+| `python -m nfl_model check` | Check the downloaded data for problems. |
+| `python -m nfl_model test` | Run every test (about five minutes on a fresh download). |
+| `python -m nfl_model picks [--week N] [--min-edge 0.03]` | Moneyline picks for the upcoming week. |
+| `python -m nfl_model linepicks [--week N] [--min-edge 1.0]` | The model's number against each spread and total. |
+| `python -m nfl_model props predict --stat STAT` | Player projections for the upcoming week. |
+| `python -m nfl_model props price --stat STAT --file lines.csv` | Price prop lines from a file. |
+| `python -m nfl_model props backtest --stat all` | Test the prop models on past seasons. |
+| `python -m nfl_model backtest` | Test the win-probability models on past seasons. |
+| `python -m nfl_model bets` | Simulate moneyline betting on past seasons. |
+| `python -m nfl_model lines` | Test the spread and total models on past seasons. |
+| `python -m nfl_model ablation` | Test whether quarterback and injury inputs help. |
+| `python -m nfl_model.ui.calibrate` | Recompute how far win chances are pulled toward the sportsbook. |
+| `python -m nfl_model.ui.preview out.html` | Write a static copy of the app's pages. |
+
+`STAT` is one of `qb_pass_yds`, `rush_yds`, `rec_yds`, `receptions`, `pass_tds`, `anytime_td`.
+
+A prop lines file is a CSV with the columns `player,line,over_odds,under_odds`. For `anytime_td` the columns are
+`player,odds` with an optional `no_odds`.
+
+## Where your files live
+
+| Folder | What is in it | Safe to delete? |
 |---|---|---|
-| Opponent defense split by position | rushing yards | receiving yards, receptions, anytime TD |
-| Offensive snap share | receiving yards, receptions, anytime TD | rushing yards |
-| Target share and air yards | receptions | receiving yards, anytime TD |
-| Carry share | - | rushing yards, anytime TD |
-| Red-zone and goal-line touches (from play-by-play) | - | anytime TD (no gain, so the ~400 MB download is not needed) |
+| `data/` | Downloaded game and player data. | Yes. It downloads again on the next start. |
+| `lines/` | Lines you typed in and the log of the app's picks. | **No.** This is your record; it cannot be rebuilt. |
+| `reports/` | Results of the tests on past seasons. | Yes. The commands above rebuild them. |
 
-The Accuracy tab rebuilds past weeks without hindsight: for each season the models learn only from earlier seasons,
-then make the picks the app would have shown, graded at closing lines (props are graded on outcomes). It shows each
-finished week of this season, the season so far, and last season as a yardstick. Results are cached in
-`data/ui_history.pkl` and rebuilt when a new game finishes.
+`data/` is not stored in the repository, so a fresh download of the project starts with an empty one.
 
-**Home list rule (tested on rebuilt Home lists, 2015-2026, 1,952 bets):** plus-money moneylines are excluded.
-With them the list returned +0.5% per bet (+/-2.5%); without them +3.3% (+/-2.1%), better in both halves of the history.
-That is still not statistically distinguishable from break-even, and 2024 and 2025 stayed negative.
+## How it works
 
-## Routes to profit that are built in (see the project note "profitability deep dive" for the evidence)
+1. **Data.** Game results, sportsbook lines, player stats, injury reports and snap counts come from
+   [nflverse](https://github.com/nflverse), a free public source. Files are downloaded once and refreshed as games finish.
+2. **Inputs.** For every game the app builds a picture of each team and player using only what was known before
+   kickoff: team strength, recent form, the starting quarterback, injuries, rest, weather and the sportsbook's own line.
+3. **Models.**
+   - Games: a win-probability model, a score-margin model and a total-points model.
+   - Player props: a projection with a likely range for yards, a count model for receptions and passing
+     touchdowns, and a chance-to-score model for touchdowns.
+4. **Comparing with the sportsbook.** Every bet is reduced to the same numbers: the model's win chance, the win
+   rate needed to break even, and the gap between them (the edge).
+5. **Staying humble.** On past seasons most of the model's disagreement with the sportsbook did not hold up. So
+   the win chances shown are pulled toward the sportsbook's, by an amount measured for each market.
+6. **Testing without hindsight.** Every result in the Accuracy tab and in `reports/` comes from a model that had
+   only seen earlier seasons. A dedicated test fails if any input uses information from the game it is predicting.
 
-* **Your own sportsbook's lines.** "Enter your sportsbook's lines" on the Moneyline & Spread tab starts from the listed
-  lines; change any number and save (`lines/game_lines.csv`). Bets are re-priced at your number while the sportsbook's
-  side of the argument stays the listed line, so a better number shows up as extra edge. On every spread side since 2015,
-  half a point better turned -2.9% into +1.8%.
-* **Teasers tab.** Underdogs of +1.5 to +2.5 with a total of 49 or less, teased six points: 77.5% of 555 legs since 2006.
-  Only worth it at -120 or better; at the low end of the range (74%) -120 just breaks even. Model-free.
-* **Home leads with three.** Rebuilt lists since 2015: best three +7.4% (+/-3.9%), full ten +3.3% (+/-2.1%).
-* A live multi-book odds feed is not wired in: it needs an account key, and the call has never been run against the real service.
+## How accurate is it
+
+Tested on seasons the models had not seen (2015 to 2026).
+
+| Area | Result |
+|---|---|
+| Picking winners | About as accurate as the sportsbook's own odds, not better. |
+| Spreads | Model picks win about 50%. Break-even at `-110` is 52.4%. |
+| Totals | Model picks win about 52%. Not clearly different from break-even. |
+| Home list, top ten | +3.3% per bet since 2015, with a margin of error of about 2 points either way. |
+| Home list, best three | +7.4% per bet since 2015, with a margin of error of about 4 points either way. |
+| Passing yards | Average miss about 59 yards, slightly better than a recent-form average. |
+| Rushing and receiving yards | Average miss about 25 yards, barely better than a recent-form average. |
+| Anytime touchdown | Chances match what happened closely. |
+| Teaser legs | 77.5% of 555 qualifying legs since 2006. Worth betting only at `-120` or better. |
+
+Single seasons swing widely, from about -13% to +15% on the Home list, so a few weeks tell you very little.
+The Accuracy tab shows the current numbers.
+
+## Project layout
+
+```
+model.py                 the app (start it with: streamlit run model.py)
+requirements.txt         packages to install
+.streamlit/config.toml   app colors
+nfl_model/
+  config.py              folders, constants, team names
+  cli.py                 the python -m nfl_model commands
+  data/                  downloads and data checks
+  features/              inputs for the game models (team form, quarterback, injuries)
+  models/                win-probability models
+  evaluation/            tests on past seasons
+  betting/               odds math, edge and stake sizing
+  props/                 player prop inputs, models and tests
+  ui/                    everything the app shows
+    board.py               the week's bets, your lines, teasers
+    render.py              page layout and styling
+    history.py             the Accuracy tab
+    tracker.py             the log of picks and its grading
+    lines_store.py         lines you type in
+tests/                   automated tests
+data/                    downloaded data (created on first run)
+lines/                   your saved lines and pick log (created when you use the app)
+reports/                 results of tests on past seasons
+```
+
+## Running the tests
+
+```
+python -m nfl_model test
+```
+
+This runs the unit tests and the check that no input uses information from the future. It takes about five
+minutes when the data has to be downloaded first.
+
+## Troubleshooting
+
+| Problem | What to do |
+|---|---|
+| `streamlit` is not recognized | Run `python -m streamlit run model.py`. If that fails, repeat the install step. |
+| `python` is not recognized (Windows) | Reinstall Python with "Add Python to PATH" ticked, or use `py` in place of `python`. |
+| `No module named ...` | Activate the virtual environment, then run `pip install -r requirements.txt` again. |
+| The page shows an error after an update | Stop the app with `Ctrl+C` and start it again. A browser refresh can keep old code loaded. |
+| The first load seems stuck | The first run downloads data and can take two minutes. Watch the terminal for progress or errors. |
+| A download fails | Check your internet connection. Some work networks block GitHub downloads. |
+| "No upcoming games have posted lines yet" | Lines for the next week usually appear early in the week. Try again later. |
+| Numbers look out of date | Delete the `data/` folder and start the app again. |
+| Team logos are missing | They load from the web. Check your connection or ad blocker. |
+| Port 8501 is already in use | Run `streamlit run model.py --server.port 8502`. |
+
+## Known limits
+
+- **No proven edge.** Nothing in the app has been shown to beat sportsbooks to the usual statistical standard.
+- **One source of lines.** Listed lines come from one free source, not from your sportsbook. Enter your own to compare.
+- **No prop prices.** There is no free history of prop lines, so props are tested on outcomes, not on profit.
+- **Who is playing.** Player lists come from recent games. Check injury reports and inactives yourself.
+- **Regular season only.** Playoff games are not covered.
+- **No live odds feed.** Code for an optional feed exists in `nfl_model/betting/live_odds.py`, but it needs an
+  account key and has not been run against the real service.
+
+## Data and credits
+
+- Game, player, injury and snap data: [nflverse](https://github.com/nflverse/nflverse-data).
+- Team logos load from ESPN's public image server.
+- Built with [Streamlit](https://streamlit.io/), [pandas](https://pandas.pydata.org/) and
+  [scikit-learn](https://scikit-learn.org/).

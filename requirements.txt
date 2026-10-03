@@ -1,6 +1,7 @@
 pandas>=2.0
 numpy
 scikit-learn
+scipy
 matplotlib
 streamlit>=1.30
 # optional, only for --gbm xgboost:
