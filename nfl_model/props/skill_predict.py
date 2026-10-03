@@ -10,7 +10,8 @@ from .skill_eval import STATS, TRAIN_START, eligible, feats_for, naive_line
 
 RECENT_WEEKS = 4
 RAW = ["player_id", "player_display_name", "position", "season", "week", "team", "opponent_team", "carries",
-       "rushing_yards", "rushing_tds", "targets", "receptions", "receiving_yards", "receiving_tds", "attempts",
+       "rushing_yards", "rushing_tds", "targets", "receptions", "receiving_yards", "receiving_tds",
+       "receiving_air_yards", "attempts",
        "passing_tds", "passing_yards"]
 
 
@@ -71,7 +72,8 @@ def upcoming_table(week: int | None = None):
     ph = placeholder_rows(games, skill, week)
     if ph.empty:
         return None, None
-    table = build_skill_table(games, pd.concat([skill, ph], ignore_index=True))
+    from ..data import load_players, load_snap_counts
+    table = build_skill_table(games, pd.concat([skill, ph], ignore_index=True), load_snap_counts(), load_players())
     up = table[(table.season == ph.season.iloc[0]) & (table.week == ph.week.iloc[0]) & table.rushing_yards.isna()]
     return table, up
 

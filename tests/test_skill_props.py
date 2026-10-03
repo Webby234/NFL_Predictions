@@ -14,9 +14,15 @@ def test_skill_features_ignore_this_week_and_future():
     cut = (skill.season > wk[0]) | ((skill.season == wk[0]) & (skill.week >= wk[1]))
     scr = skill.copy()
     for c in ["carries", "rushing_yards", "targets", "receptions", "receiving_yards", "rushing_tds",
-              "receiving_tds", "attempts", "passing_tds"]:
+              "receiving_tds", "receiving_air_yards", "attempts", "passing_tds"]:
         scr.loc[cut, c] = 777
-    alt = build_skill_table(games, scr)
+    from nfl_model.data import load_players, load_snap_counts
+    snaps, players = load_snap_counts(), load_players()
+    base = build_skill_table(games, skill, snaps, players)
+    s2 = snaps.copy()
+    s2.loc[(s2.season > wk[0]) | ((s2.season == wk[0]) & (s2.week >= wk[1])), "offense_pct"] = 0.123
+    alt = build_skill_table(games, scr, s2, players)
+    assert base[(base.season == wk[0]) & (base.week == wk[1])].p_snap.notna().mean() > 0.8
     cols = [c for c in base.columns if c.startswith(("p_", "team_", "opp_")) or c in ("games", "total_r")]
     a = base[(base.season == wk[0]) & (base.week == wk[1])].set_index(["player_id", "team"])[cols]
     b = alt[(alt.season == wk[0]) & (alt.week == wk[1])].set_index(["player_id", "team"])[cols]

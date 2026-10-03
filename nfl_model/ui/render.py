@@ -7,7 +7,7 @@ from __future__ import annotations
 from html import escape
 import pandas as pd
 from ..config import logo_url
-from .board import PROP_LABEL, nick
+from .board import PROP_LABEL, model_pick, nick
 
 WINDOW = 0.08          # the meter shows break-even +/- this many points of win chance
 
@@ -77,8 +77,13 @@ header[data-testid="stHeader"]{background:transparent}
 .nb-opt .what{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .nb-opt .price{color:var(--muted);font-weight:500;margin-left:6px}
 .nb-opt .chance{font-family:var(--display);font-weight:600;font-size:1.2rem}
-.nb-opt.value{border-color:var(--turf);background:var(--turf-soft)}
+.nb-opt.pick{border-color:var(--turf);background:var(--turf-soft)}
 .nb-opt.value::before{content:"";position:absolute;left:-1px;top:8px;bottom:8px;width:4px;border-radius:2px;background:var(--flag)}
+.nb-opt .right{display:flex;align-items:center;gap:8px}
+.nb-chip{font-size:.72rem;font-weight:600;border-radius:4px;padding:1px 6px;background:var(--flag);color:var(--ink)}
+.nb-key{display:flex;gap:18px;flex-wrap:wrap;color:var(--muted);font-size:.88rem;margin:0 0 14px}
+.nb-key span{display:inline-flex;align-items:center;gap:7px}
+.nb-key i{width:26px;height:16px;border-radius:5px;border:1px solid var(--turf);background:var(--turf-soft);display:inline-block}
 .nb-gfoot{color:var(--muted);font-size:.88rem;margin-top:6px}
 .nb-table{width:100%;border-collapse:collapse}
 .nb-table th{font-size:.8rem;font-weight:600;color:var(--muted);text-align:left;padding:10px 14px;border-bottom:1px solid var(--rule);white-space:nowrap}
@@ -99,6 +104,17 @@ header[data-testid="stHeader"]{background:transparent}
 .nb-verdict{font-size:.88rem;white-space:nowrap}
 .nb-verdict .yes{font-weight:600;color:var(--turf)}
 .nb-verdict .no{color:var(--muted)}
+.nb-table tr.sum td{background:#F7F9F6;font-weight:600}
+.nb-table td.c,.nb-table th.c{text-align:right}
+.nb-table td.plain{font-size:1rem;white-space:nowrap}
+.nb-leg{display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:14px;padding:14px 18px;border-top:1px solid var(--rule)}
+.nb-leg:first-child{border-top:0}
+.nb-leg .was{color:var(--muted);font-size:.9rem;text-align:right}
+.nb-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:0 0 16px}
+.nb-fact{background:var(--card);border:1px solid var(--rule);border-radius:12px;padding:12px 14px}
+.nb-fact b{font-family:var(--display);font-weight:700;font-size:1.7rem;display:block;line-height:1.1}
+.nb-fact span{color:var(--muted);font-size:.84rem}
+@media (max-width:760px){.nb-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .nb-axis{display:flex;justify-content:space-between;font-size:.74rem;color:var(--muted);font-weight:400}
 @media (max-width:760px){
 .nb-week{font-size:2.6rem}
@@ -170,11 +186,13 @@ def bet_row(rank: int, b: dict, games_by_id: dict | None = None) -> str:
 <div class="nb-edge"><b>{edge}</b><span>{'edge' if clears else 'short'}</span></div></div>''')
 
 
-def top_list(bets: list[dict], games: list[dict]) -> str:
+def top_list(bets: list[dict], games: list[dict], start: int = 1) -> str:
+    if not bets and start > 1:
+        return ""
     if not bets:
         return '<div class="nb"><div class="nb-panel"><div class="nb-empty">No games with posted lines yet. Lines usually appear early in the week; reload then.</div></div></div>'
     by_id = {g["game_id"]: g for g in games}
-    rows = "".join(bet_row(i, b, by_id) for i, b in enumerate(bets, 1))
+    rows = "".join(bet_row(i, b, by_id) for i, b in enumerate(bets, start))
     return f'<div class="nb"><div class="nb-panel">{rows}</div></div>'
 
 
@@ -187,26 +205,37 @@ def section(title: str, lead: str = "") -> str:
     return f'<div class="nb"><div class="nb-h2">{escape(title)}</div>{lead_html}</div>'
 
 
-def _opt(b: dict, label: str, code=None) -> str:
-    cls = "nb-opt value" if b["ev"] > 0 else "nb-opt"
+def _opt(b: dict, label: str, code=None, pick: bool = False) -> str:
+    """One side of a market. `pick` = the side the model predicts to win the bet; the Value chip marks any
+    side whose price pays more than the model's chance requires (on a moneyline that can be the underdog)."""
+    value = b["ev"] > 0
+    cls = "nb-opt" + (" pick" if pick else "") + (" value" if value else "")
     art = logo(code, "") if code else "<span></span>"
-    title = "Model sees value at this price" if b["ev"] > 0 else ""
-    return (f'<div class="{cls}" title="{title}">{art}<div class="what">{escape(label)}'
-            f'<span class="price">{fmt_odds(b["odds"])}</span></div><div class="chance">{pct(b["p_win"])}</div></div>')
+    chip = '<span class="nb-chip">Value</span>' if value else ""
+    return (f'<div class="{cls}">{art}<div class="what">{escape(label)}'
+            f'<span class="price">{fmt_odds(b["odds"])}</span></div>'
+            f'<div class="right">{chip}<div class="chance">{pct(b["p_win"])}</div></div></div>')
+
+
+def lines_key() -> str:
+    return ('<div class="nb"><div class="nb-key"><span><i></i>Model\'s pick in each market</span>'
+            '<span><span class="nb-chip">Value</span>The price pays more than the model\'s chance requires</span></div></div>')
 
 
 def game_card(g: dict) -> str:
     cols = []
-    cols.append("<h4>Moneyline</h4>" + "".join(_opt(b, nick(b["team"]), b["team"]) for b in g["moneyline"]))
-    cols.append("<h4>Spread</h4>" + "".join(_opt(b, b["pick"], b["team"]) for b in g["spread"]))
-    if g["total"]:
-        cols.append("<h4>Total points</h4>" + "".join(_opt(b, b["pick"]) for b in g["total"]))
+    for title, key, label in (("Moneyline", "moneyline", lambda b: nick(b["team"])), ("Spread", "spread", lambda b: b["pick"]),
+                              ("Total points", "total", lambda b: b["pick"])):
+        if not g[key]:
+            continue
+        best = model_pick(g[key])
+        cols.append(f"<h4>{title}</h4>" + "".join(_opt(b, label(b), b.get("team"), b is best) for b in g[key]))
     m = g["model_margin"]
     lean = "a toss-up" if abs(m) < 0.25 else f"{g['home_name'] if m > 0 else g['away_name']} by {abs(m):.1f}"
     tot = f" and {g['model_total']:.1f} total points" if g["total"] else ""
     body = "".join(f'<div class="nb-mkcol">{c}</div>' for c in cols)
     return _one_line(f'''<div class="nb"><div class="nb-game"><div class="nb-ghead"><div class="nb-gname">{escape(g['away_name'])} at {escape(g['home_name'])}</div>
-<div class="nb-gtime">{escape(g['kickoff'])}</div></div><div class="nb-mk">{body}</div>
+<div class="nb-gtime">{'<span class="nb-tag">Your lines</span>' if g.get('yours') else ''}{escape(g['kickoff'])}</div></div><div class="nb-mk">{body}</div>
 <div class="nb-gfoot">Model sees {escape(lean)}{tot}.</div></div></div>''')
 
 
@@ -294,3 +323,38 @@ def td_table(df: pd.DataFrame, bets: list[dict]) -> str:
     head = ('<tr><th>Player</th><th class="r">Chance to score</th><th class="hide"></th>'
             f'<th class="r">Fair price</th>{book_th}</tr>')
     return f'<div class="nb"><div class="nb-panel"><table class="nb-table"><thead>{head}</thead><tbody>{"".join(rows)}</tbody></table></div></div>'
+
+
+def simple_table(df: pd.DataFrame) -> str:
+    """A plain table of already-formatted text. Rows whose first cell doesn't start with 'Week' are summary rows."""
+    if df is None or not len(df):
+        return '<div class="nb"><div class="nb-panel"><div class="nb-empty">No finished weeks to show yet.</div></div></div>'
+    head = "".join(f'<th{"" if i == 0 else " class=c"}>{escape(str(c))}</th>' for i, c in enumerate(df.columns))
+    rows = []
+    for row in df.itertuples(index=False):
+        cls = "" if str(row[0]).startswith("Week") else ' class="sum"'
+        cells = "".join(f'<td class="{"plain" if i == 0 else "num c"}">{escape(str(v))}</td>' for i, v in enumerate(row))
+        rows.append(f"<tr{cls}>{cells}</tr>")
+    return f'<div class="nb"><div class="nb-panel"><table class="nb-table"><thead><tr>{head}</tr></thead><tbody>{"".join(rows)}</tbody></table></div></div>'
+
+
+def teaser_facts(t: dict) -> str:
+    """The record behind the teaser page, with what it means at the prices sportsbooks usually charge."""
+    cell = lambda big, small: f'<div class="nb-fact"><b>{big}</b><span>{escape(small)}</span></div>'
+    return ('<div class="nb"><div class="nb-facts">'
+            + cell(pct(t["rate"], 1), f'of {t["legs"]} legs like these have won since {t["first"]}')
+            + cell(fmt_odds(t["breakeven"]), "break-even price for a two-team teaser at that rate")
+            + cell(f'{100 * t["roi"][-120]:+.0f}%', "past return per teaser at -120")
+            + cell(f'{100 * t["roi"][-130]:+.0f}%', "past return per teaser at -130")
+            + '</div></div>')
+
+
+def teaser_list(legs: list[dict]) -> str:
+    if not legs:
+        return ('<div class="nb"><div class="nb-panel"><div class="nb-empty">No games qualify this week. '
+                'A leg needs an underdog of +1.5 to +2.5 in a game with a total of 49 or less.</div></div></div>')
+    rows = "".join(
+        f'<div class="nb-leg"><div>{logo(l["team"])}</div><div><div class="nb-pick">{escape(l["pick"])}</div>'
+        f'<div class="nb-meta">{escape(l["matchup"])} {escape(l["kickoff"])}</div></div>'
+        f'<div class="was">teased from {escape(l["was"])}<br>total {l["total"]:g}</div></div>' for l in legs)
+    return f'<div class="nb"><div class="nb-panel">{rows}</div></div>'

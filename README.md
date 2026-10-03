@@ -130,7 +130,7 @@ Backtest findings: small accuracy gains over form-only baselines for yards and a
 
 ## The app (`streamlit run model.py`)
 
-Built for someone placing bets, not studying the model. No sidebar, four tabs:
+Built for someone placing bets, not studying the model. No sidebar, six tabs:
 
 | Tab | What it shows |
 |---|---|
@@ -138,6 +138,8 @@ Built for someone placing bets, not studying the model. No sidebar, four tabs:
 | Moneyline & Spread | every game: moneyline, spread and total, with the model's win chance for each side |
 | Player Props | Passing / Rushing / Receiving: projection, likely range, fair line |
 | Touchdowns | anytime-touchdown chance and fair price; passing touchdowns |
+| Teasers | this week's qualifying underdog teaser legs, their record since 2006 and the price needed |
+| Accuracy | past weeks for each page above, chosen from a dropdown (`nfl_model/ui/history.py`) |
 
 * `nfl_model/ui/board.py` puts every bet on one yardstick (win chance, break-even, edge, expected value).
   Win chances are pulled toward the sportsbook's by the `TRUST` factors, because on past seasons most of the model's
@@ -147,3 +149,40 @@ Built for someone placing bets, not studying the model. No sidebar, four tabs:
   box on each tab. They are saved to `lines/prop_lines.csv`, which doubles as the start of a real prop price history.
 * `nfl_model/ui/render.py` is plain HTML/CSS; `python -m nfl_model.ui.preview out.html` writes a static copy of the pages.
 * Colours come from `.streamlit/config.toml` plus the CSS in `render.py`. Backtests and diagnostics stay in the CLI.
+
+## Tracking the app's picks
+
+Opening the app logs the week's Home list (and every prop line you priced) to `lines/picks_log.csv`; the last snapshot
+before a game is the one that counts. `python -m nfl_model track` grades them once games are played
+(win / loss / push / void, profit on 1 unit each) and writes `reports/picks_graded.csv`. The Home page shows the running
+record once anything has settled. This is the only forward test with real prices, and it needs hundreds of bets to mean much.
+
+## Prop inputs that were tested (walk-forward, kept only if better by more than 2 standard errors)
+
+| Input | Kept for | Dropped for |
+|---|---|---|
+| Opponent defense split by position | rushing yards | receiving yards, receptions, anytime TD |
+| Offensive snap share | receiving yards, receptions, anytime TD | rushing yards |
+| Target share and air yards | receptions | receiving yards, anytime TD |
+| Carry share | - | rushing yards, anytime TD |
+| Red-zone and goal-line touches (from play-by-play) | - | anytime TD (no gain, so the ~400 MB download is not needed) |
+
+The Accuracy tab rebuilds past weeks without hindsight: for each season the models learn only from earlier seasons,
+then make the picks the app would have shown, graded at closing lines (props are graded on outcomes). It shows each
+finished week of this season, the season so far, and last season as a yardstick. Results are cached in
+`data/ui_history.pkl` and rebuilt when a new game finishes.
+
+**Home list rule (tested on rebuilt Home lists, 2015-2026, 1,952 bets):** plus-money moneylines are excluded.
+With them the list returned +0.5% per bet (+/-2.5%); without them +3.3% (+/-2.1%), better in both halves of the history.
+That is still not statistically distinguishable from break-even, and 2024 and 2025 stayed negative.
+
+## Routes to profit that are built in (see the project note "profitability deep dive" for the evidence)
+
+* **Your own sportsbook's lines.** "Enter your sportsbook's lines" on the Moneyline & Spread tab starts from the listed
+  lines; change any number and save (`lines/game_lines.csv`). Bets are re-priced at your number while the sportsbook's
+  side of the argument stays the listed line, so a better number shows up as extra edge. On every spread side since 2015,
+  half a point better turned -2.9% into +1.8%.
+* **Teasers tab.** Underdogs of +1.5 to +2.5 with a total of 49 or less, teased six points: 77.5% of 555 legs since 2006.
+  Only worth it at -120 or better; at the low end of the range (74%) -120 just breaks even. Model-free.
+* **Home leads with three.** Rebuilt lists since 2015: best three +7.4% (+/-3.9%), full ten +3.3% (+/-2.1%).
+* A live multi-book odds feed is not wired in: it needs an account key, and the call has never been run against the real service.

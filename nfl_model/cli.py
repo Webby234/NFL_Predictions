@@ -209,6 +209,21 @@ def cmd_props(args) -> None:
     print("\nUntested against real prop prices - treat as a second opinion, not a bet signal.")
 
 
+def cmd_track(args) -> None:
+    """Grade the picks the app has logged (lines/picks_log.csv) -> reports/picks_graded.csv"""
+    from .data import load_games, load_skill_games
+    from .ui import tracker
+    picks = tracker.load()
+    if picks.empty:
+        print("No picks logged yet. Open the app (streamlit run model.py) before the games to log the week's list."); return
+    graded = tracker.grade(picks, load_games(), load_skill_games())
+    graded.to_csv(REPORT_DIR / "picks_graded.csv", index=False)
+    summ = tracker.summarize(graded)
+    print(f"{len(graded)} picks logged, {graded.result.notna().sum()} settled.")
+    print(summ.to_string(index=False) if len(summ) else "Nothing settled yet.")
+    print("\nA few weeks is noise: it takes hundreds of bets to tell skill from luck.")
+
+
 def cmd_test(args) -> None:
     import subprocess
     sys.exit(max(subprocess.call([sys.executable, "-m", m]) for m in
@@ -219,7 +234,7 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(prog="python -m nfl_model", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name, fn in (("backtest", cmd_backtest), ("bets", cmd_bets), ("ablation", cmd_ablation), ("picks", cmd_picks), ("check", cmd_check), ("lines", cmd_lines), ("linepicks", cmd_linepicks), ("props", cmd_props), ("test", cmd_test)):
+    for name, fn in (("backtest", cmd_backtest), ("bets", cmd_bets), ("ablation", cmd_ablation), ("picks", cmd_picks), ("check", cmd_check), ("lines", cmd_lines), ("linepicks", cmd_linepicks), ("props", cmd_props), ("track", cmd_track), ("test", cmd_test)):
         p = sub.add_parser(name)
         p.set_defaults(fn=fn)
         if name in ("backtest", "bets", "picks"):

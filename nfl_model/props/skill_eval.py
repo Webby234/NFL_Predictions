@@ -26,20 +26,22 @@ class Stat:
 
 STATS = {
     "rush_yds": Stat("rush_yds", "cont", "rushing_yards", "p_rush_yds",
-                     ["p_rush_yds", "p_carries", "p_targets", "team_carries_rel", "opp_rush_allowed_rel", "games"] + POSF,
+                     ["p_rush_yds", "p_carries", "p_targets", "team_carries_rel", "opp_rush_allowed_rel", "opp_rb_rush_rel",
+                      "games"] + POSF,
                      lambda d: d.p_carries >= 5, 6.0),
     "rec_yds": Stat("rec_yds", "cont", "receiving_yards", "p_rec_yds",
-                    ["p_rec_yds", "p_targets", "p_receptions", "team_att_rel", "opp_rec_allowed_rel", "games"] + POSF,
+                    ["p_rec_yds", "p_targets", "p_receptions", "team_att_rel", "opp_rec_allowed_rel", "p_snap", "games"] + POSF,
                     lambda d: d.p_targets >= 3.5, 6.0),
     "receptions": Stat("receptions", "count", "receptions", "p_receptions",
-                       ["p_receptions", "p_targets", "p_rec_yds", "team_att_rel", "opp_rec_allowed_rel", "games"] + POSF,
+                       ["p_receptions", "p_targets", "p_rec_yds", "team_att_rel", "opp_rec_allowed_rel", "p_tgt_share", "p_air_yds",
+                        "p_snap", "games"] + POSF,
                        lambda d: d.p_targets >= 3.5),
     "pass_tds": Stat("pass_tds", "count", "passing_tds", "p_pass_tds",
                      ["p_pass_tds", "p_pass_att", "team_att_rel", "opp_rec_allowed_rel", "games"],
                      lambda d: (d.position == "QB") & (d.p_pass_att >= 15)),
     "anytime_td": Stat("anytime_td", "binary", "any_td", "p_any_td",
                        ["p_any_td", "p_carries", "p_targets", "p_rush_yds", "p_rec_yds", "team_carries_rel",
-                        "team_att_rel", "games"] + POSF,
+                        "team_att_rel", "p_snap", "games"] + POSF,
                        lambda d: (d.p_carries >= 5) | (d.p_targets >= 3.5)),
 }
 

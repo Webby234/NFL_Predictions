@@ -6,11 +6,11 @@ from . import board as B, lines_store, render as R
 
 def build_html(board: dict, lines: pd.DataFrame) -> str:
     games, props = board["games"], board["props"]
-    prop_bets = B.price_prop_lines(props, lines)
+    prop_bets = B.price_prop_lines(props, lines, games)
     top = B.top_bets(B.game_bets(games) + prop_bets)
     of = lambda stat: [b for b in prop_bets if b.get("stat") == stat]
     parts = [R.header(board, sub="The ten spots where the model likes the price most this week."),
-             R.top_list(top, games), R.section("Moneyline & Spread")]
+             R.top_list(top, games), R.section("Moneyline & Spread"), R.lines_key()]
     parts += [R.game_card(g) for g in games[:3]]
     for stat, title in (("qb_pass_yds", "Passing yards"), ("rush_yds", "Rushing yards"), ("rec_yds", "Receiving yards")):
         if stat in props:

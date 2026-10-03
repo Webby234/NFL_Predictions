@@ -5,6 +5,8 @@ Four pages for someone placing bets, not studying the model:
   Moneyline & Spread   every game: moneyline, spread and total
   Player Props         passing, rushing and receiving projections
   Touchdowns           anytime-touchdown chances and passing touchdowns
+  Teasers              underdog teaser legs that have paid historically
+  Accuracy             how each of those pages did in past weeks
 
 All numbers come from nfl_model.ui.board; all markup from nfl_model.ui.render.
 Backtests and diagnostics live in the command line (python -m nfl_model ...), not here.
@@ -14,7 +16,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from nfl_model.ui import board as B, lines_store, render as R
+from nfl_model.ui import board as B, lines_store, render as R, tracker
 
 st.set_page_config(page_title="NFL betting board", page_icon="🏈", layout="wide", initial_sidebar_state="collapsed")
 st.markdown(R.style_tag(), unsafe_allow_html=True)
@@ -29,6 +31,20 @@ def html(s: str) -> None:
 @st.cache_resource(ttl=3600, show_spinner="Getting this week's lines and projections...")
 def get_board() -> dict:
     return B.build_board()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_record() -> str:
+    """How the Home list has done so far (empty until logged picks have been played)."""
+    from nfl_model.data import load_games, load_skill_games
+    picks = tracker.load()
+    return tracker.record_line(tracker.grade(picks, load_games(), load_skill_games())) if len(picks) else ""
+
+
+@st.cache_resource(ttl=3600, show_spinner="Checking past weeks...")
+def get_history() -> dict:
+    from nfl_model.ui import history
+    return history.load_or_build()
 
 
 def find(df: pd.DataFrame, key: str) -> pd.DataFrame:
@@ -70,23 +86,62 @@ def line_editor(stat: str, df: pd.DataFrame, saved: pd.DataFrame, yes_only: bool
             st.rerun()
 
 
+def game_line_editor(board: dict, games: list[dict]) -> None:
+    """Type in the lines your own sportsbook offers. A better number than the listed one shows up as extra edge."""
+    names = {"away_ml": "Away moneyline", "home_ml": "Home moneyline", "home_spread": "Home spread",
+             "away_spread_odds": "Away spread odds", "home_spread_odds": "Home spread odds", "total": "Total",
+             "over_odds": "Over odds", "under_odds": "Under odds"}
+    current = pd.DataFrame([{"Game": g["matchup"], **{names[k]: g.get("lines", g["listed"])[k] for k in names}} for g in games])
+    listed = pd.DataFrame([{"game_id": g["game_id"], **g["listed"]} for g in games])
+    with st.expander("Enter your sportsbook's lines"):
+        st.caption("These start as the listed lines. Change any number to what your sportsbook offers, then save. "
+                   "Home spread is the home team's number, for example -2.5. Half a point in your favor is worth a lot.")
+        cfg = {v: st.column_config.NumberColumn(v, step=0.5 if k in ("home_spread", "total") else 1) for k, v in names.items()}
+        edited = st.data_editor(current, hide_index=True, disabled=["Game"], column_config=cfg,
+                                use_container_width=True, key="ed_games")
+        c1, c2 = st.columns([1, 5])
+        if c1.button("Save lines", key="save_games"):
+            out = edited.rename(columns={v: k for k, v in names.items()}).assign(game_id=listed.game_id.values)
+            n = lines_store.save_game_lines(board["season"], board["week"], out, listed)
+            st.session_state["saved_msg"] = f"Using your lines for {n} game{'s' if n != 1 else ''}."
+            st.rerun()
+        if any(g.get("yours") for g in games) and c2.button("Go back to the listed lines", key="reset_games"):
+            lines_store.save_game_lines(board["season"], board["week"], listed, listed)
+            st.session_state["saved_msg"] = "Back to the listed lines."
+            st.rerun()
+
+
 board = get_board()
 if not board["games"]:
     html(R.header(board, sub="No upcoming games have posted lines yet. Lines usually appear early in the week."))
     st.stop()
 
-games, props = board["games"], board["props"]
+props = board["props"]
+games = B.apply_book_lines(board["games"], lines_store.load_game_lines(board["season"], board["week"]))
 saved = lines_store.load(board["season"], board["week"])
-prop_bets = B.price_prop_lines(props, saved)
+prop_bets = B.price_prop_lines(props, saved, games)
 of = lambda stat: [b for b in prop_bets if b.get("stat") == stat]
 if "saved_msg" in st.session_state:
     st.toast(st.session_state.pop("saved_msg"))
 
-home, lines_tab, props_tab, td_tab = st.tabs(["Home", "Moneyline & Spread", "Player Props", "Touchdowns"])
+home, lines_tab, props_tab, td_tab, tease_tab, acc_tab = st.tabs(
+    ["Home", "Moneyline & Spread", "Player Props", "Touchdowns", "Teasers", "Accuracy"])
 
 with home:
-    html(R.header(board, sub="The ten bets where the model likes the price most this week, across every market."))
-    html(R.top_list(B.top_bets(B.game_bets(games) + prop_bets), games))
+    html(R.header(board, sub="The model's best-priced bets this week, across every market. The first three are "
+                             "the ones that have held up best on past seasons."))
+    top = B.top_bets(B.game_bets(games) + prop_bets)
+    html(R.top_list(top[:3], games))
+    if len(top) > 3:
+        html(R.section("The next seven", "Smaller edges. On past seasons these roughly broke even."))
+        html(R.top_list(top[3:], games, start=4))
+    try:                                   # keep a record of what was recommended; never let it break the page
+        tracker.log(board, top, prop_bets)
+        record = get_record()
+    except Exception:
+        record = ""
+    if record:
+        html(R.note(f"<b>Track record.</b> {record}"))
     html(R.note("<b>How to read it.</b> The yellow line is how often a bet has to win to break even at that price. "
                 "The dot is how often the model expects it to win. Green past the line is edge; grey means it falls short."))
     html(R.note("<b>Keep it in proportion.</b> On past seasons this model has not beaten sportsbook prices after the "
@@ -94,12 +149,16 @@ with home:
                 "Use the list as leads to look into, not sure things."))
     if not prop_bets:
         html(R.note("Player props and touchdowns join this list once you add your sportsbook's lines on those tabs."))
+    html(R.note("Moneyline underdogs are left off this list. They were its weakest picks on past seasons. "
+                "You can still see them on the Moneyline & Spread tab."))
 
 with lines_tab:
     html(R.section("Every game this week",
-                   "Percentages are the model's chance each bet wins. A green box marks a price the model sees value in."))
+                   "The model's pick for every moneyline, spread and total. Percentages are its chance each bet wins."))
+    html(R.lines_key())
     for g in games:
         html(R.game_card(g))
+    game_line_editor(board, games)
 
 with props_tab:
     passing, rushing, receiving = st.tabs(["Passing", "Rushing", "Receiving"])
@@ -138,3 +197,64 @@ with td_tab:
         html(R.count_table(ptd, of("pass_tds"), "touchdown passes"))
         html(R.note("Passing-touchdown chances have run too confident in testing, so they are left out of the Home list."))
     html(R.note("Player lists come from who has played recently. Check injury reports and inactives before you bet."))
+
+with tease_tab:
+    t = board["teasers"]
+    html(R.section("Teaser legs worth a look",
+                   "A teaser moves the spread six points your way, and both teams must cover. Short underdogs in "
+                   "lower-scoring games are the one kind of leg that has paid: six points takes them past both 3 and 7, "
+                   "the two most common winning margins."))
+    html(R.teaser_facts(t))
+    legs = B.teaser_legs(games)
+    html(R.teaser_list(legs))
+    if len(legs) == 1:
+        html(R.note("Only one game qualifies this week, and a teaser needs two legs. Pairing it with a leg that "
+                    "does not qualify gives up the advantage."))
+    html(R.note(f"<b>Check the price first.</b> Take a two-team, six-point teaser only at -120 or better. If the real "
+                f"win rate is at the low end of its range ({100 * t['low']:.0f}%), -120 only breaks even and -130 loses. "
+                "Many sportsbooks now charge -130 or more, or change the rules for ties, so read the terms."))
+    html(R.note("This page does not use the model. It is a pricing pattern in the sportsbook's own lines, "
+                "measured on closing spreads."))
+
+with acc_tab:
+    html(R.section("How the model has done",
+                   "Past weeks, rebuilt the way this app would have shown them. The model only learned from earlier "
+                   "seasons, so it had not seen any of the results it is graded on."))
+    view = st.selectbox("Show accuracy for", ["Home", "Moneyline & Spread", "Player Props", "Touchdowns", "Teasers"],
+                        key="acc_view")
+    try:
+        hist = get_history()
+    except Exception as e:                     # never let the history page take the board down with it
+        hist = None
+        html(R.note(f"Past weeks could not be loaded ({type(e).__name__}). The other tabs are unaffected."))
+    if hist and view == "Home":
+        html(R.section("Home list", "The best-priced game bets each week, 1 unit on each, at the sportsbook's closing price."))
+        html(R.simple_table(hist["Home"]))
+        html(R.note("Past Home lists cover moneylines, spreads and totals only. Player props need a sportsbook line to "
+                    "be ranked, and there is no free record of past prop lines."))
+        if get_record():
+            html(R.note(f"<b>Picks logged by this app.</b> {get_record()}"))
+    elif hist and view == "Moneyline & Spread":
+        html(R.section("Model's pick in every game", "Wins and losses for the green-box pick in each market. Pushes are left out."))
+        html(R.simple_table(hist["Moneyline & Spread"]))
+        html(R.note("A spread or total bet at the usual -110 has to win about 52.4% of the time to break even. "
+                    "Moneyline picks are mostly favorites, so a high win rate there does not mean profit."))
+    elif hist and view == "Player Props":
+        for title in ("Passing yards", "Rushing yards", "Receiving yards"):
+            html(R.section(title, "Average miss is how far the projection was from the real number, in yards."))
+            html(R.simple_table(hist[title]))
+        html(R.section("Receptions", "Over/under call is against the nearest line to the player's recent average."))
+        html(R.simple_table(hist["Receptions"]))
+        html(R.note("Props are graded on what players actually did, not against sportsbook prices."))
+    elif hist and view == "Teasers":
+        html(R.section("Qualifying teaser legs", "Underdogs of +1.5 to +2.5 in games with a total of 49 or less, moved up six points."))
+        html(R.simple_table(hist["Teasers"]))
+        html(R.note("Returns assume two qualifying legs per teaser that win or lose independently."))
+    elif hist:
+        html(R.section("Anytime touchdown", "Expected scorers is the sum of the model's chances. If it is close to the "
+                                            "actual count, the chances are about right."))
+        html(R.simple_table(hist["Touchdowns"]))
+        html(R.section("Passing touchdowns", "Average miss is in touchdown passes per quarterback."))
+        html(R.simple_table(hist["Passing touchdowns"]))
+    if hist:
+        html(R.note("A single week is mostly luck. The season and last-season rows are the ones to read."))

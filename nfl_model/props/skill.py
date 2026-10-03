@@ -22,29 +22,54 @@ TEAM_HL = 8.0
 LAM, LG_D, TLAM = 0.5 ** (1 / HALFLIFE), 0.5 ** (1 / LG_WEEK_HL), 0.5 ** (1 / TEAM_HL)
 POS = ["QB", "RB", "WR", "TE"]
 METRICS = {"rush_yds": "rushing_yards", "carries": "carries", "rec_yds": "receiving_yards", "targets": "targets",
-           "receptions": "receptions", "pass_tds": "passing_tds", "pass_att": "attempts"}
-METRIC_NAMES = list(METRICS) + ["any_td"]
+           "receptions": "receptions", "pass_tds": "passing_tds", "pass_att": "attempts",
+           "air_yds": "receiving_air_yards"}
+DERIVED = ["any_td", "tgt_share", "carry_share"]     # computed per row in _prep
+METRIC_NAMES = list(METRICS) + DERIVED
+DEF_KEYS = ["rec_RB", "rec_WR", "rec_TE", "rush_RB", "td"]   # what a defense allows, split by who gained it
 CTX = ["is_home", "dome", "wind_eff", "temp_eff", "team_implied_r", "opp_implied_r", "spread_team", "total_r"]
 BASE = ["games", "pos_QB", "pos_RB", "pos_WR", "pos_TE", "team_carries_rel", "team_att_rel",
-        "opp_rush_allowed_rel", "opp_rec_allowed_rel"]
+        "opp_rush_allowed_rel", "opp_rec_allowed_rel", "opp_pos_rec_rel", "opp_rb_rush_rel", "opp_td_rel", "p_snap"]
 
 
 def _prep(skill: pd.DataFrame) -> pd.DataFrame:
     d = skill.copy()
     d["team"] = d.team.replace(TEAM_CODE_FIX); d["opponent_team"] = d.opponent_team.replace(TEAM_CODE_FIX)
     d["any_td"] = ((d.rushing_tds + d.receiving_tds) > 0).astype(float)
+    if "receiving_air_yards" not in d:
+        d["receiving_air_yards"] = 0.0
+    tm = d.groupby(["season", "week", "team"])[["targets", "carries"]].transform("sum")
+    d["tgt_share"] = (d.targets / tm.targets.where(tm.targets > 0)).fillna(0.0)      # share of the team's targets
+    d["carry_share"] = (d.carries / tm.carries.where(tm.carries > 0)).fillna(0.0)
     return d
 
 
-def build_skill_table(games: pd.DataFrame | None = None, skill: pd.DataFrame | None = None) -> pd.DataFrame:
+def _snap_pct(d: pd.DataFrame, snaps, players) -> np.ndarray:
+    """Offensive snap share per row (NaN before 2013 or when the player can't be matched)."""
+    if snaps is None or players is None or not len(snaps):
+        return np.full(len(d), np.nan)
+    s = snaps.merge(players, left_on="pfr_player_id", right_on="pfr_id")[["season", "week", "gsis_id", "offense_pct"]]
+    s = s.drop_duplicates(["season", "week", "gsis_id"])
+    return d[["season", "week", "player_id"]].merge(s, left_on=["season", "week", "player_id"],
+                                                    right_on=["season", "week", "gsis_id"], how="left").offense_pct.values
+
+
+def build_skill_table(games: pd.DataFrame | None = None, skill: pd.DataFrame | None = None,
+                      snaps: pd.DataFrame | None = None, players: pd.DataFrame | None = None) -> pd.DataFrame:
     games = load_games() if games is None else games
+    if skill is None and snaps is None:
+        from ..data import load_players, load_snap_counts
+        snaps, players = load_snap_counts(), load_players()
     d = _prep(load_skill_games() if skill is None else skill)
     ctx = team_game_context(games)
     d = d.merge(ctx[["season", "week", "team", "is_home", "dome", "wind_eff", "temp_eff", "total_line",
                      "spread_team", "team_implied", "opp_implied"]], on=["season", "week", "team"], how="left")
     d = d.sort_values(["season", "week"]).reset_index(drop=True)
     vals = {m: d[c].values.astype(float) for m, c in METRICS.items()}
-    vals["any_td"] = d.any_td.values.astype(float)
+    for m in DERIVED:
+        vals[m] = d[m].values.astype(float)
+    snap = _snap_pct(d, snaps, players)
+    psnap = {}                                       # id -> [decayed sum, decayed weight]
     pos = d.position.values; pid = d.player_id.values; team = d.team.values; opp = d.opponent_team.values
     wk_idx = d.groupby(["season", "week"]).indices
 
@@ -52,6 +77,8 @@ def build_skill_table(games: pd.DataFrame | None = None, skill: pd.DataFrame | N
     lgp = {p: [0.0, {m: 0.0 for m in METRIC_NAMES}] for p in POS}       # per pos: decayed rows, decayed sums
     tstate, ostate = {}, {}                          # team -> {carries:[s,w], att:[s,w]};  defense -> {rush,rec:[s,w]}
     lgt = {"carries": [0.0, 0.0], "att": [0.0, 0.0], "rush": [0.0, 0.0], "rec": [0.0, 0.0], "tot": [0.0, 0.0]}
+    lgt.update({k: [0.0, 0.0] for k in DEF_KEYS})
+    dstate = {}                                      # defense -> {DEF_KEY: [dev sum, weight]}
     feats = {k: np.full(len(d), np.nan) for k in [f"p_{m}" for m in METRIC_NAMES] + BASE + ["total_r"]}
     team_implied_r = np.full(len(d), np.nan); opp_implied_r = np.full(len(d), np.nan)
     lvl = lambda a: a[0] / a[1] if a[1] else np.nan
@@ -74,6 +101,13 @@ def build_skill_table(games: pd.DataFrame | None = None, skill: pd.DataFrame | N
             feats["team_att_rel"][i] = (ts["att"][0] / (ts["att"][1] + PRIOR_GAMES)) if ts else 0.0
             feats["opp_rush_allowed_rel"][i] = (os_["rush"][0] / (os_["rush"][1] + PRIOR_GAMES)) if os_ else 0.0
             feats["opp_rec_allowed_rel"][i] = (os_["rec"][0] / (os_["rec"][1] + PRIOR_GAMES)) if os_ else 0.0
+            ds = dstate.get(opp[i])
+            dv = lambda k: (ds[k][0] / (ds[k][1] + PRIOR_GAMES)) if ds else 0.0
+            feats["opp_pos_rec_rel"][i] = dv(f"rec_{p}") if p != "QB" else 0.0
+            feats["opp_rb_rush_rel"][i] = dv("rush_RB")
+            feats["opp_td_rel"][i] = dv("td")
+            sn = psnap.get(pid[i])
+            feats["p_snap"][i] = sn[0] / sn[1] if sn else np.nan
             tot = lg_t["tot"] if not np.isnan(lg_t["tot"]) else 44.0
             feats["total_r"][i] = d.total_line.values[i] - tot
             team_implied_r[i] = d.team_implied.values[i] - tot / 2
@@ -93,6 +127,26 @@ def build_skill_table(games: pd.DataFrame | None = None, skill: pd.DataFrame | N
             st[0] = LAM * st[0] + 1; st[1] += 1
             for m in METRIC_NAMES:
                 st[2][m] = LAM * st[2][m] + (vals[m][i] - lgm[pos[i]][m])
+        for i in done:
+            if not np.isnan(snap[i]):
+                sn = psnap.setdefault(pid[i], [0.0, 0.0])
+                sn[0] = LAM * sn[0] + snap[i]; sn[1] = LAM * sn[1] + 1
+        # what each defense allowed this week, split by the position that gained it
+        dw = {}
+        for i in done:
+            a = dw.setdefault(opp[i], dict.fromkeys(DEF_KEYS, 0.0))
+            if pos[i] != "QB":
+                a[f"rec_{pos[i]}"] += vals["rec_yds"][i]; a["td"] += vals["any_td"][i]
+            if pos[i] == "RB":
+                a["rush_RB"] += vals["rush_yds"][i]
+        for k in DEF_KEYS:
+            lgt[k][0] *= LG_D; lgt[k][1] *= LG_D
+        for t_, a in dw.items():
+            st = dstate.setdefault(t_, {k: [0.0, 0.0] for k in DEF_KEYS})
+            for k in DEF_KEYS:
+                lgt[k][0] += a[k]; lgt[k][1] += 1
+                st[k][0] = TLAM * st[k][0] + (a[k] - lg_t[k] if not np.isnan(lg_t[k]) else 0.0)
+                st[k][1] = TLAM * st[k][1] + 1
         # team volume and defense allowed (per team-week sums over all rows)
         tw, ow = {}, {}
         for i in done:
