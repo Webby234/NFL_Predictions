@@ -13,6 +13,9 @@ Backtests and diagnostics live in the command line (python -m nfl_model ...), no
 """
 from __future__ import annotations
 
+import threading
+import time
+
 import pandas as pd
 import streamlit as st
 
@@ -32,9 +35,54 @@ def html(s: str) -> None:
     st.markdown(s, unsafe_allow_html=True)
 
 
-@st.cache_resource(ttl=3600, show_spinner="Getting this week's lines and projections...")
-def get_board() -> dict:
-    return B.build_board()
+REFRESH_SECONDS = 3600     # rebuild the board at most once an hour
+RETRY_SECONDS = 600        # after a failed rebuild, keep showing the last good board and try again in 10 minutes
+
+
+@st.cache_resource
+def _shared() -> dict:
+    """One copy for every visitor: the current board, the Accuracy tables, and a lock so only one visitor builds."""
+    return {"lock": threading.Lock(), "board": None, "hist": None, "at": 0.0}
+
+
+def load_board_and_history():
+    """The week's board and the Accuracy tables. Shows a centered progress screen while they are being built."""
+    box = _shared()
+    fresh = lambda: box["board"] is not None and time.time() - box["at"] < REFRESH_SECONDS
+    if fresh():
+        return box["board"], box["hist"]
+    slot = st.empty()
+    with slot.container():
+        html(R.loading("Setting up this week's board",
+                       "Downloading the latest games and running the numbers. This takes a minute or two."))
+        mid = st.columns([1, 2, 1])[1]
+        bar = mid.progress(0.0)
+        step = mid.empty()
+
+    def say(fraction: float, text: str) -> None:
+        bar.progress(min(max(float(fraction), 0.0), 1.0))
+        step.markdown(R.loading_step(text), unsafe_allow_html=True)
+
+    say(0.0, "Getting started")
+    with box["lock"]:
+        if not fresh():                    # another visitor may have finished the build while we waited
+            try:
+                board = B.build_board(progress=lambda f, t: say(0.65 * f, t))
+                hist = None
+                if board["games"]:
+                    try:
+                        from nfl_model.ui import history
+                        hist = history.load_or_build(lambda f, t: say(0.65 + 0.35 * f, t))
+                    except Exception:
+                        hist = None            # the Accuracy tab says so; the rest of the app still works
+                box.update(board=board, hist=hist, at=time.time())
+            except Exception:
+                if box["board"] is None:
+                    slot.empty()
+                    raise
+                box["at"] = time.time() - REFRESH_SECONDS + RETRY_SECONDS
+    slot.empty()
+    return box["board"], box["hist"]
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -43,12 +91,6 @@ def get_record() -> str:
     from nfl_model.data import load_games, load_skill_games
     picks = tracker.load()
     return tracker.record_line(tracker.grade(picks, load_games(), load_skill_games())) if len(picks) else ""
-
-
-@st.cache_resource(ttl=3600, show_spinner="Checking past weeks...")
-def get_history() -> dict:
-    from nfl_model.ui import history
-    return history.load_or_build()
 
 
 def find(df: pd.DataFrame, key: str) -> pd.DataFrame:
@@ -115,7 +157,7 @@ def game_line_editor(board: dict, games: list[dict]) -> None:
             st.rerun()
 
 
-board = get_board()
+board, hist = load_board_and_history()
 if not board["games"]:
     html(R.header(board, sub="No upcoming games have posted lines yet. Lines usually appear early in the week."))
     st.stop()
@@ -222,11 +264,8 @@ with acc_tab:
                    "seasons, so it had not seen any of the results it is graded on."))
     view = st.selectbox("Show accuracy for", ["Home", "Moneyline & Spread", "Player Props", "Touchdowns", "Teasers"],
                         key="acc_view")
-    try:
-        hist = get_history()
-    except Exception as e:                     # never let the history page take the board down with it
-        hist = None
-        html(R.note(f"Past weeks could not be loaded ({type(e).__name__}). The other tabs are unaffected."))
+    if not hist:
+        html(R.note("Past weeks could not be loaded this time. The other tabs are unaffected."))
     if hist and view == "Home":
         html(R.section("Home list", "The best-priced game bets each week, 1 unit on each, at the sportsbook's closing price."))
         html(R.simple_table(hist["Home"]))

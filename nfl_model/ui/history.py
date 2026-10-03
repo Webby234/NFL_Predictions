@@ -40,18 +40,21 @@ def past_line_bets(df: pd.DataFrame, season: int) -> pd.DataFrame:
     return tracker.grade(pd.DataFrame(rows), load_games(), NO_SKILL)
 
 
-def past_props(seasons: list[int]) -> dict:
+def past_props(seasons: list[int], progress=None) -> dict:
     """Out-of-sample projections vs what happened, per prop. {stat: frame with season, week, actual, pred, ...}"""
     from ..props import evaluate as E, skill_eval as S
     from ..props.features import build_qb_prop_table
+    say = progress or (lambda f, t: None)
     out = {}
+    say(0.0, "Checking past weeks: passing yards")
     qb, _ = E.walk_forward(build_qb_prop_table(), first_test=min(seasons))
     m = E.APP_MODEL
     out["qb_pass_yds"] = pd.DataFrame(dict(season=qb.season, week=qb.week, actual=qb.passing_yards, pred=qb[f"pred_{m}"],
                                            base=qb.pred_baseline_qb, q10=qb[f"q10_{m}"], q25=qb[f"q25_{m}"],
                                            q75=qb[f"q75_{m}"], q90=qb[f"q90_{m}"]))
     table = S.build_skill_table()
-    for name, st in S.STATS.items():
+    for i, (name, st) in enumerate(S.STATS.items()):
+        say(0.25 + 0.75 * i / len(S.STATS), f"Checking past weeks: {B.PROP_LABEL.get(name, name).lower()}")
         w = S.walk_forward(table, st, first_test=min(seasons))
         d = dict(season=w.season, week=w.week, actual=w[st.target].astype(float), base=w[st.base])
         if st.kind == "binary":
@@ -150,13 +153,15 @@ def teaser_table(legs: pd.DataFrame, current: int) -> pd.DataFrame:
     return pd.concat([t, pd.DataFrame([{"": f"Since {int(legs.season.min())}", **fn(legs)}])], ignore_index=True)
 
 
-def build(current: int | None = None) -> dict:
+def build(current: int | None = None, progress=None) -> dict:
+    say = progress or (lambda f, t: None)
+    say(0.0, "Checking past weeks: games")
     df = load_feature_table()
     done = df[(df.game_type == "REG") & df.home_score.notna()]
     current = int(current or done.season.max())
     seasons = [current - 1, current]
     bets = pd.concat([past_line_bets(df, s) for s in seasons], ignore_index=True)
-    props = past_props(seasons)
+    props = past_props(seasons, lambda f, t: say(0.15 + 0.85 * f, t))
     out = {"season": current, "Home": home_table(bets, current), "Moneyline & Spread": lines_table(bets, current),
            "Touchdowns": td_table(props["anytime_td"], current), "Passing touchdowns": count_table(props["pass_tds"], current),
            "Receptions": count_table(props["receptions"], current),
@@ -166,7 +171,7 @@ def build(current: int | None = None) -> dict:
     return out
 
 
-def load_or_build() -> dict:
+def load_or_build(progress=None) -> dict:
     """Rebuilt only when a new game has finished; otherwise read from the cache on disk."""
     g = load_games()
     done = g[(g.game_type == "REG") & g.home_score.notna()]
@@ -178,7 +183,7 @@ def load_or_build() -> dict:
                 return saved["tables"]
         except Exception:
             pass
-    tables = build(key[0])
+    tables = build(key[0], progress)
     CACHE.parent.mkdir(exist_ok=True)
     CACHE.write_bytes(pickle.dumps(dict(key=key, tables=tables)))
     return tables

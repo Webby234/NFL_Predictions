@@ -257,18 +257,24 @@ def game_bets(games: list[dict]) -> list[dict]:
 
 
 # ------------------------------------------------------------------ player props ----
-def build_props(week: int | None = None) -> dict:
-    """Projections for each prop market. Returns {stat: DataFrame}; frames keep the fitted model in .attrs."""
+def build_props(week: int | None = None, progress=None) -> dict:
+    """Projections for each prop market. Returns {stat: DataFrame}; frames keep the fitted model in .attrs.
+    `progress(fraction, text)` is called as each part finishes."""
     from ..props import skill_predict as SP
     from ..props.predict import predict_upcoming as predict_qb
+    say = progress or (lambda f, t: None)
     out = {}
+    say(0.0, "Loading player stats")
     table, up = SP.upcoming_table(week)
+    say(0.40, "Projecting passing yards")
     qb = predict_qb(week, skill_table=table)
     if len(qb):
         out["qb_pass_yds"] = qb.rename(columns={"pred_yards": "pred"})
         out["qb_pass_yds"].attrs = dict(qb.attrs, stat="qb_pass_yds")
     if up is not None and len(up):
-        for name in ("rush_yds", "rec_yds", "receptions", "pass_tds", "anytime_td"):
+        names = ("rush_yds", "rec_yds", "receptions", "pass_tds", "anytime_td")
+        for i, name in enumerate(names):
+            say(0.55 + 0.45 * i / len(names), f"Projecting {PROP_LABEL[name].lower()}")
             p = SP.predict_stat(table, up, name)
             if len(p):
                 out[name] = p
@@ -352,13 +358,19 @@ def _stamp(t) -> str:
     return f"{t:%b} {t.day}, {t.hour % 12 or 12}:{t:%M} {'PM' if t.hour >= 12 else 'AM'}"
 
 
-def build_board(week: int | None = None) -> dict:
+def build_board(week: int | None = None, progress=None) -> dict:
+    """Everything the app shows for the upcoming week. `progress(fraction, text)` reports each step (optional)."""
+    say = progress or (lambda f, t: None)
+    say(0.02, "Downloading games and lines")
     df = load_feature_table()
+    say(0.22, "Pricing every game")
     games = build_games(df, week)
     if not games:
         return dict(games=[], props={}, week=None, season=None)
     wk = games[0]["week"]
     from ..data import load_games
-    return dict(games=games, props=build_props(wk), week=wk, season=games[0]["season"],
+    props = build_props(wk, lambda f, t: say(0.30 + 0.68 * f, t))
+    say(1.0, "This week is ready")
+    return dict(games=games, props=props, week=wk, season=games[0]["season"],
                 teasers=teaser_stats(teaser_history(load_games())),
                 built=_stamp(pd.Timestamp.now()))

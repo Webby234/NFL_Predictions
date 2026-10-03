@@ -263,6 +263,14 @@ def test_hosted_flag_follows_the_environment():
         os.environ.pop("NFL_BOARD_HOSTED", None); importlib.reload(C)
 
 
+def test_loading_screen_markup_and_progress_hooks():
+    import inspect
+    from nfl_model.ui import history as H
+    assert "Setting up" in R.loading() and "\n" not in R.loading("a", "b") and "&lt;" in R.loading_step("<x>")
+    for fn in (B.build_board, B.build_props, H.build, H.load_or_build, H.past_props):
+        assert inspect.signature(fn).parameters["progress"].default is None      # progress reporting is optional
+
+
 def test_timestamp_uses_no_platform_specific_codes():
     import inspect
     assert B._stamp(pd.Timestamp("2026-10-02 19:09")) == "Oct 2, 7:09 PM"

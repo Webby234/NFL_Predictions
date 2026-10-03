@@ -115,6 +115,10 @@ header[data-testid="stHeader"]{background:transparent}
 .nb-fact b{font-family:var(--display);font-weight:700;font-size:1.7rem;display:block;line-height:1.1}
 .nb-fact span{color:var(--muted);font-size:.84rem}
 @media (max-width:760px){.nb-facts{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.nb-load{text-align:center;margin:16vh auto 18px;max-width:680px}
+.nb-load h1{font-family:var(--display);font-weight:700;font-size:2.6rem;line-height:1;margin:0 0 10px;color:var(--ink)}
+.nb-load p{color:var(--muted);margin:0;font-size:1rem}
+.nb-step{text-align:center;color:var(--muted);font-size:.92rem;margin-top:8px;min-height:1.4em}
 .nb-axis{display:flex;justify-content:space-between;font-size:.74rem;color:var(--muted);font-weight:400}
 @media (max-width:760px){
 .nb-week{font-size:2.6rem}
@@ -358,3 +362,12 @@ def teaser_list(legs: list[dict]) -> str:
         f'<div class="nb-meta">{escape(l["matchup"])} {escape(l["kickoff"])}</div></div>'
         f'<div class="was">teased from {escape(l["was"])}<br>total {l["total"]:g}</div></div>' for l in legs)
     return f'<div class="nb"><div class="nb-panel">{rows}</div></div>'
+
+
+def loading(title: str = "Setting up this week's board", sub: str = "") -> str:
+    """Centered heading for the loading screen; the progress bar and step text sit under it."""
+    return f'<div class="nb"><div class="nb-load"><h1>{escape(title)}</h1><p>{escape(sub)}</p></div></div>'
+
+
+def loading_step(text: str) -> str:
+    return f'<div class="nb"><div class="nb-step">{escape(text)}</div></div>'
