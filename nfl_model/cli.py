@@ -166,9 +166,9 @@ def cmd_props(args) -> None:
             summ = E.summarize(out)
             summ.round(4).to_csv(REPORT_DIR / "props_qb_summary.csv", index=False)
             E.by_season(out).to_csv(REPORT_DIR / "props_qb_by_season.csv")
-            E.over_calibration(out, "ridge_with_lines").to_csv(REPORT_DIR / "props_qb_calibration.csv")
+            E.over_calibration(out, E.APP_MODEL).to_csv(REPORT_DIR / "props_qb_calibration.csv")
             print("== qb_pass_yds"); print(summ.round(3).to_string(index=False))
-            print(E.over_calibration(out, "ridge_with_lines"))
+            print(E.over_calibration(out, E.APP_MODEL))
         if stat != "qb_pass_yds":
             from .props import skill_eval as S
             names = list(S.STATS) if stat == "all" else [stat]

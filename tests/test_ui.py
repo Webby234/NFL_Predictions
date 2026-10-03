@@ -29,10 +29,9 @@ def _bet(market, game, edge, **kw):
     return dict(market=market, game_id=game, edge=edge, ev=edge, pick=market, odds=-110, p_win=.5, breakeven=.5, **kw)
 
 
-def test_top_bets_one_opinion_per_game_and_skips_passing_tds():
+def test_top_bets_one_opinion_per_game_and_one_side_per_player():
     bets = [_bet("Moneyline", "g1", .05), _bet("Spread", "g1", .04), _bet("Total", "g1", .03), _bet("Total", "g1", -.03),
-            _bet("Spread", "g2", .02), _bet("Passing touchdowns", None, .30, stat="pass_tds", player="QB One"),
-            _bet("Rushing yards", None, .01, stat="rush_yds", player="RB One"),
+            _bet("Spread", "g2", .02), _bet("Rushing yards", None, .01, stat="rush_yds", player="RB One"),
             _bet("Rushing yards", None, -.05, stat="rush_yds", player="RB One")]
     top = B.top_bets(bets)
     assert [(b["market"], b["game_id"]) for b in top] == [("Moneyline", "g1"), ("Total", "g1"), ("Spread", "g2"),

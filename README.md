@@ -64,6 +64,13 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+If PowerShell says "running scripts is disabled on this system", run this first. It applies only to the
+current window:
+
+```
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
 macOS or Linux:
 
 ```
@@ -82,7 +89,8 @@ Your browser opens at <http://localhost:8501>. If it does not, paste that addres
 To stop the app, press `Ctrl+C` in the terminal.
 
 **The first start is slow.** It downloads about 40 MB of data and builds the week's projections, which takes
-one to two minutes. Later starts take about half a minute, and the data refreshes itself as games are played.
+two to three minutes. Later starts take about half a minute, and the data refreshes itself as games are played.
+The first start after each week's games also takes about a minute longer while the Accuracy tab is rebuilt.
 
 ## Using the app each week
 
@@ -161,7 +169,9 @@ A prop lines file is a CSV with the columns `player,line,over_odds,under_odds`. 
 3. **Models.**
    - Games: a win-probability model, a score-margin model and a total-points model.
    - Player props: a projection with a likely range for yards, a count model for receptions and passing
-     touchdowns, and a chance-to-score model for touchdowns.
+     touchdowns, and a chance-to-score model for touchdowns. Each averages a linear model with a boosted-tree
+     model, and uses recent form at two speeds, the player's last game, teammates ruled out, his own injury
+     tag and the starting quarterback.
 4. **Comparing with the sportsbook.** Every bet is reduced to the same numbers: the model's win chance, the win
    rate needed to break even, and the gap between them (the edge).
 5. **Staying humble.** On past seasons most of the model's disagreement with the sportsbook did not hold up. So
@@ -180,8 +190,10 @@ Tested on seasons the models had not seen (2015 to 2026).
 | Totals | Model picks win about 52%. Not clearly different from break-even. |
 | Home list, top ten | +3.3% per bet since 2015, with a margin of error of about 2 points either way. |
 | Home list, best three | +7.4% per bet since 2015, with a margin of error of about 4 points either way. |
-| Passing yards | Average miss about 59 yards, slightly better than a recent-form average. |
-| Rushing and receiving yards | Average miss about 25 yards, barely better than a recent-form average. |
+| Passing yards | Average miss about 58 yards, against about 60 for a recent-form average. |
+| Rushing yards | Average miss about 23.7 yards, against 24.8 for a recent-form average. |
+| Receiving yards | Average miss about 24.6 yards, against 25.0 for a recent-form average. |
+| Receptions | Average miss about 1.72 catches, against 1.75 for a recent-form average. |
 | Anytime touchdown | Chances match what happened closely. |
 | Teaser legs | 77.5% of 555 qualifying legs since 2006. Worth betting only at `-120` or better. |
 
@@ -230,6 +242,7 @@ minutes when the data has to be downloaded first.
 |---|---|
 | `streamlit` is not recognized | Run `python -m streamlit run model.py`. If that fails, repeat the install step. |
 | `python` is not recognized (Windows) | Reinstall Python with "Add Python to PATH" ticked, or use `py` in place of `python`. |
+| "running scripts is disabled on this system" (Windows) | Run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`, then activate again. Or skip activation and use `.venv\Scripts\python -m streamlit run model.py`. |
 | `No module named ...` | Activate the virtual environment, then run `pip install -r requirements.txt` again. |
 | The page shows an error after an update | Stop the app with `Ctrl+C` and start it again. A browser refresh can keep old code loaded. |
 | The first load seems stuck | The first run downloads data and can take two minutes. Watch the terminal for progress or errors. |

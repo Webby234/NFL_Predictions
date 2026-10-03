@@ -22,7 +22,27 @@ def make_mean_model(kind: str):
         return make_pipeline(SimpleImputer(strategy="median"),
                              HistGradientBoostingRegressor(max_depth=3, learning_rate=0.04, max_iter=200,
                                                            min_samples_leaf=60, l2_regularization=5.0))
+    if kind == "blend":
+        return Blend(make_mean_model("ridge"), make_mean_model("gbm"))
     raise ValueError(kind)
+
+
+class Blend:
+    """Average of a linear model and a boosted-tree model. On 2019-2025 the average beat either one alone
+    for every prop: the linear half is steady, the boosted half picks up interactions such as role changes."""
+
+    def __init__(self, a, b):
+        self.a, self.b = a, b
+
+    def fit(self, X, y):
+        self.a.fit(X, y); self.b.fit(X, y)
+        return self
+
+    def predict(self, X):
+        return 0.5 * self.a.predict(X) + 0.5 * self.b.predict(X)
+
+    def predict_proba(self, X):
+        return 0.5 * self.a.predict_proba(X) + 0.5 * self.b.predict_proba(X)
 
 
 @dataclass
@@ -102,12 +122,11 @@ class CountModel:
 
 
 def fit_count(train, feats, target, kind="poisson") -> CountModel:
-    if kind == "poisson":
-        m = make_pipeline(SimpleImputer(strategy="median"), StandardScaler(), PoissonRegressor(alpha=1.0, max_iter=500))
-    else:
-        m = make_pipeline(SimpleImputer(strategy="median"),
-                          HistGradientBoostingRegressor(loss="poisson", max_depth=3, learning_rate=0.04, max_iter=200,
-                                                        min_samples_leaf=60, l2_regularization=5.0))
+    lin = lambda: make_pipeline(SimpleImputer(strategy="median"), StandardScaler(), PoissonRegressor(alpha=1.0, max_iter=500))
+    gbm = lambda: make_pipeline(SimpleImputer(strategy="median"),
+                                HistGradientBoostingRegressor(loss="poisson", max_depth=3, learning_rate=0.04, max_iter=200,
+                                                              min_samples_leaf=60, l2_regularization=5.0))
+    m = lin() if kind == "poisson" else Blend(lin(), gbm()) if kind == "blend" else gbm()
     m.fit(train[feats], train[target])
     mu = m.predict(train[feats]); y = train[target].values
     disp = max(0.0, float(np.sum((y - mu) ** 2 - mu) / np.sum(mu ** 2)))
@@ -124,11 +143,10 @@ class BinaryModel:
 
 
 def fit_binary(train, feats, target, kind="logit") -> BinaryModel:
-    if kind == "logit":
-        m = make_pipeline(SimpleImputer(strategy="median"), StandardScaler(), LogisticRegression(C=0.5, max_iter=1000))
-    else:
-        m = make_pipeline(SimpleImputer(strategy="median"),
-                          HistGradientBoostingClassifier(max_depth=3, learning_rate=0.04, max_iter=200,
-                                                         min_samples_leaf=80, l2_regularization=5.0))
+    lin = lambda: make_pipeline(SimpleImputer(strategy="median"), StandardScaler(), LogisticRegression(C=0.5, max_iter=1000))
+    gbm = lambda: make_pipeline(SimpleImputer(strategy="median"),
+                                HistGradientBoostingClassifier(max_depth=3, learning_rate=0.04, max_iter=200,
+                                                               min_samples_leaf=80, l2_regularization=5.0))
+    m = lin() if kind == "logit" else Blend(lin(), gbm()) if kind == "blend" else gbm()
     m.fit(train[feats], train[target])
     return BinaryModel(feats, m)

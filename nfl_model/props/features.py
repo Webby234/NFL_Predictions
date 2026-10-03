@@ -24,6 +24,20 @@ QB_FEATS = ["qb_yds", "qb_att", "qb_ypa", "qb_games", "opp_yds_allowed", "is_hom
 LINE_FEATS = ["team_implied_r", "opp_implied_r", "spread_team", "total_r"]
 NO_LINES = ["qb_yds", "qb_att", "qb_ypa", "qb_games", "opp_yds_allowed", "is_home", "dome", "wind_eff", "temp_eff", "lg_yds"]
 WITH_LINES = NO_LINES + LINE_FEATS
+# Inputs borrowed from the skill-player table (teammates out, fast/slow form, injury tag...). Tested on 2019-2024
+# and 2025: with the blended model they lowered squared error by about 100 in both periods.
+QB_EXTRA = ["vac_tgt", "vac_tgt_share", "vac_pos_tgt", "n_out", "inj_q", "pf_pass_yds", "ps_pass_yds", "pf_pass_tds",
+            "ps_pass_tds", "p_pass_att", "last_snap", "opp_pos_rec_rel", "team_att_rel"]
+BEST = WITH_LINES + QB_EXTRA
+
+
+def add_skill_inputs(qb_table: pd.DataFrame, skill_table: pd.DataFrame | None) -> pd.DataFrame:
+    """Attach QB_EXTRA columns from the skill-player table (blank when no table is given)."""
+    out = qb_table.drop(columns=[c for c in QB_EXTRA if c in qb_table], errors="ignore")
+    if skill_table is None or not len(out):
+        return out.assign(**{c: np.nan for c in QB_EXTRA})
+    x = skill_table[["season", "week", "player_id"] + QB_EXTRA].drop_duplicates(["season", "week", "player_id"])
+    return out.merge(x, on=["season", "week", "player_id"], how="left")
 
 
 def team_game_context(games: pd.DataFrame) -> pd.DataFrame:
@@ -42,7 +56,17 @@ def team_game_context(games: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(rows, ignore_index=True)
 
 
-def build_qb_prop_table(games: pd.DataFrame | None = None, passing: pd.DataFrame | None = None) -> pd.DataFrame:
+def build_qb_prop_table(games: pd.DataFrame | None = None, passing: pd.DataFrame | None = None,
+                        skill_table: pd.DataFrame | None = None) -> pd.DataFrame:
+    """QB-game rows with pre-game inputs. Called with no arguments it also builds the skill-player table and
+    attaches QB_EXTRA; pass `skill_table` to reuse one you already have."""
+    if games is None and passing is None and skill_table is None:
+        from .skill import build_skill_table
+        skill_table = build_skill_table()
+    return add_skill_inputs(_build_qb_rows(games, passing), skill_table)
+
+
+def _build_qb_rows(games: pd.DataFrame | None = None, passing: pd.DataFrame | None = None) -> pd.DataFrame:
     games = load_games() if games is None else games
     passing = load_passing_games() if passing is None else passing
     p = passing.copy()
@@ -119,5 +143,5 @@ def upcoming_qb_rows(games: pd.DataFrame, passing: pd.DataFrame, week: int | Non
     if not fake:
         return pd.DataFrame()
     both = pd.concat([passing, pd.DataFrame(fake)], ignore_index=True)
-    t = build_qb_prop_table(games, both)
+    t = _build_qb_rows(games, both)
     return t[(t.season == up.season.iloc[0]) & (t.week == week) & t.passing_yards.isna()].copy()

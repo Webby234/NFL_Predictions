@@ -19,7 +19,7 @@ CODE_TO_NAME = {v: k for k, v in TEAM_NAME_TO_CODE.items()}
 NICK = {c: n.split()[-1] for c, n in CODE_TO_NAME.items()}
 PROP_LABEL = {"qb_pass_yds": "Passing yards", "rush_yds": "Rushing yards", "rec_yds": "Receiving yards",
               "receptions": "Receptions", "pass_tds": "Passing touchdowns", "anytime_td": "Anytime touchdown"}
-TOP10_EXCLUDED = {"pass_tds"}      # over/under chances for passing TDs were overconfident in testing
+TOP10_EXCLUDED: set = set()       # props kept off the Home list (none: passing-TD chances are calibrated since the blend)
 
 
 def nick(code: str) -> str:
@@ -262,11 +262,11 @@ def build_props(week: int | None = None) -> dict:
     from ..props import skill_predict as SP
     from ..props.predict import predict_upcoming as predict_qb
     out = {}
-    qb = predict_qb(week)
+    table, up = SP.upcoming_table(week)
+    qb = predict_qb(week, skill_table=table)
     if len(qb):
         out["qb_pass_yds"] = qb.rename(columns={"pred_yards": "pred"})
         out["qb_pass_yds"].attrs = dict(qb.attrs, stat="qb_pass_yds")
-    table, up = SP.upcoming_table(week)
     if up is not None and len(up):
         for name in ("rush_yds", "rec_yds", "receptions", "pass_tds", "anytime_td"):
             p = SP.predict_stat(table, up, name)

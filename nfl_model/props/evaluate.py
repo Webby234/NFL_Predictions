@@ -1,12 +1,13 @@
 """Walk-forward evaluation of QB passing-yards models. Scored on outcomes, not betting returns."""
 from __future__ import annotations
 import numpy as np, pandas as pd
-from .features import NO_LINES, WITH_LINES, build_qb_prop_table
+from .features import BEST, NO_LINES, WITH_LINES, build_qb_prop_table
 from .models import QUANTILES, fit_dist
 
 TRAIN_START, FIRST_TEST = 2008, 2015
 ZOO = {"ridge_no_lines": (NO_LINES, "ridge"), "ridge_with_lines": (WITH_LINES, "ridge"),
-       "gbm_with_lines": (WITH_LINES, "gbm")}
+       "gbm_with_lines": (WITH_LINES, "gbm"), "blend_with_lines": (BEST, "blend")}
+APP_MODEL = "blend_with_lines"          # what the app shows
 
 
 def pinball(y, q_pred, q):
@@ -62,7 +63,7 @@ def over_calibration(out: pd.DataFrame, m: str, bins=(0, .2, .35, .45, .55, .65,
                              actual=o.groupby(b, observed=True).mean())).round(3)
 
 
-def by_season(out, m="ridge_with_lines"):
+def by_season(out, m=APP_MODEL):
     return out.groupby("season").apply(lambda d: pd.Series(dict(
         n=len(d), mae_model=np.abs(d.passing_yards - d[f"pred_{m}"]).mean(),
         mae_baseline=np.abs(d.passing_yards - d.pred_baseline_qb).mean())), include_groups=False).round(2)

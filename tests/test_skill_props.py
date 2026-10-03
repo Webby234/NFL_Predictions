@@ -14,16 +14,20 @@ def test_skill_features_ignore_this_week_and_future():
     cut = (skill.season > wk[0]) | ((skill.season == wk[0]) & (skill.week >= wk[1]))
     scr = skill.copy()
     for c in ["carries", "rushing_yards", "targets", "receptions", "receiving_yards", "rushing_tds",
-              "receiving_tds", "receiving_air_yards", "attempts", "passing_tds"]:
+              "receiving_tds", "receiving_air_yards", "attempts", "passing_tds", "passing_yards"]:
         scr.loc[cut, c] = 777
-    from nfl_model.data import load_players, load_snap_counts
-    snaps, players = load_snap_counts(), load_players()
-    base = build_skill_table(games, skill, snaps, players)
+    from nfl_model.data import load_injuries, load_players, load_snap_counts
+    snaps, players, inj = load_snap_counts(), load_players(), load_injuries()
+    base = build_skill_table(games, skill, snaps, players, inj)
     s2 = snaps.copy()
     s2.loc[(s2.season > wk[0]) | ((s2.season == wk[0]) & (s2.week >= wk[1])), "offense_pct"] = 0.123
-    alt = build_skill_table(games, scr, s2, players)
+    alt = build_skill_table(games, scr, s2, players, inj)
     assert base[(base.season == wk[0]) & (base.week == wk[1])].p_snap.notna().mean() > 0.8
-    cols = [c for c in base.columns if c.startswith(("p_", "team_", "opp_")) or c in ("games", "total_r")]
+    cols = [c for c in base.columns if c.startswith(("p_", "pf_", "ps_", "last_", "vac_", "qb_", "team_", "opp_"))
+            or c in ("games", "total_r", "inj_q", "n_out")]
+    assert {"vac_tgt", "pf_targets", "ps_targets", "last_targets", "qb_pass_dev", "inj_q"} <= set(cols)
+    wkrows = base[(base.season == wk[0]) & (base.week == wk[1])]
+    assert wkrows.vac_tgt.max() > 0 and wkrows.inj_q.sum() > 0          # the injury report is actually being used
     a = base[(base.season == wk[0]) & (base.week == wk[1])].set_index(["player_id", "team"])[cols]
     b = alt[(alt.season == wk[0]) & (alt.week == wk[1])].set_index(["player_id", "team"])[cols]
     idx = a.index.intersection(b.index)
@@ -36,6 +40,26 @@ def test_eligibility_uses_only_pregame_columns():
                           p_targets=[1.0, 1.0, 1.0], p_pass_att=[0.0] * 3, rushing_yards=[0.0, 200.0, 50.0],
                           carries=[0.0, 30.0, 12.0]))      # same-game outcomes must not change who is eligible
     assert eligible(t, STATS["rush_yds"]).index.tolist() == [0, 2]
+
+
+def test_blend_is_the_average_of_its_two_models():
+    from nfl_model.props.models import Blend
+    class Const:
+        def __init__(self, v): self.v = v
+        def fit(self, X, y): return self
+        def predict(self, X): return np.full(len(X), self.v)
+        def predict_proba(self, X): return np.column_stack([np.full(len(X), 1 - self.v), np.full(len(X), self.v)])
+    b = Blend(Const(0.2), Const(0.6)).fit(None, None)
+    assert np.allclose(b.predict(np.zeros((3, 1))), 0.4) and np.allclose(b.predict_proba(np.zeros((3, 1)))[:, 1], 0.4)
+
+
+def test_every_prop_input_exists_in_the_table():
+    from nfl_model.props.skill import XCOLS, METRIC_NAMES, BASE
+    from nfl_model.props.skill_eval import feats_for
+    have = set(XCOLS) | {f"p_{m}" for m in METRIC_NAMES} | set(BASE) | {"is_home", "dome", "wind_eff", "temp_eff",
+                                                                        "team_implied_r", "opp_implied_r", "spread_team", "total_r"}
+    for st in STATS.values():
+        assert not [f for f in feats_for(st, True) if f not in have], st.name
 
 
 def test_count_model_probabilities():

@@ -46,7 +46,7 @@ def past_props(seasons: list[int]) -> dict:
     from ..props.features import build_qb_prop_table
     out = {}
     qb, _ = E.walk_forward(build_qb_prop_table(), first_test=min(seasons))
-    m = "ridge_with_lines"
+    m = E.APP_MODEL
     out["qb_pass_yds"] = pd.DataFrame(dict(season=qb.season, week=qb.week, actual=qb.passing_yards, pred=qb[f"pred_{m}"],
                                            base=qb.pred_baseline_qb, q10=qb[f"q10_{m}"], q25=qb[f"q25_{m}"],
                                            q75=qb[f"q75_{m}"], q90=qb[f"q90_{m}"]))
@@ -170,7 +170,7 @@ def load_or_build() -> dict:
     """Rebuilt only when a new game has finished; otherwise read from the cache on disk."""
     g = load_games()
     done = g[(g.game_type == "REG") & g.home_score.notna()]
-    key = (int(done.season.max()), int(len(done)), 4)          # last number: bump when the tables change shape
+    key = (int(done.season.max()), int(len(done)), 5)          # last number: bump when the tables change shape
     if CACHE.exists():
         try:
             saved = pickle.loads(CACHE.read_bytes())

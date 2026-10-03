@@ -195,7 +195,6 @@ with td_tab:
     if ptd is not None and len(ptd):
         html(R.section("Passing touchdowns", "Projected touchdown passes for each starting quarterback."))
         html(R.count_table(ptd, of("pass_tds"), "touchdown passes"))
-        html(R.note("Passing-touchdown chances have run too confident in testing, so they are left out of the Home list."))
     html(R.note("Player lists come from who has played recently. Check injury reports and inactives before you bet."))
 
 with tease_tab:

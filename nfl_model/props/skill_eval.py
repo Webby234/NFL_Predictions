@@ -46,8 +46,20 @@ STATS = {
 }
 
 
+# Inputs added after the 2019-2024 / 2025 experiments: teammates out, starting QB, own injury tag, fast and slow
+# form, and last game. Each prop gets the versions that match it.
+EXTRA = {
+    "rush_yds": ["vac_car", "vac_carry_share", "qb_pass_dev", "qb_new", "inj_q", "pf_rush_yds", "pf_carries", "ps_rush_yds", "ps_carries", "pf_carry_share", "ps_carry_share", "last_carries", "last_snap"],
+    "rec_yds": ["vac_tgt", "vac_tgt_share", "vac_pos_tgt", "qb_pass_dev", "qb_new", "inj_q", "pf_rec_yds", "pf_targets", "ps_rec_yds", "ps_targets", "pf_tgt_share", "ps_tgt_share", "last_targets", "last_snap"],
+    "receptions": ["vac_tgt", "vac_tgt_share", "vac_pos_tgt", "qb_pass_dev", "qb_new", "inj_q", "pf_receptions", "pf_targets", "ps_receptions", "ps_targets", "pf_tgt_share", "ps_tgt_share", "last_targets", "last_snap"],
+    "anytime_td": ["vac_tgt", "vac_car", "vac_tgt_share", "vac_carry_share", "qb_pass_dev", "qb_new", "inj_q", "pf_any_td", "ps_any_td", "pf_carries", "ps_carries", "pf_targets", "ps_targets", "last_targets", "last_carries", "last_snap"],
+    "pass_tds": ["vac_tgt", "vac_tgt_share", "inj_q", "pf_pass_tds", "ps_pass_tds", "pf_pass_yds", "ps_pass_yds", "p_pass_yds"],
+}
+KIND = {"cont": "blend", "count": "blend", "binary": "blend"}      # linear + boosted average, best for every prop
+
+
 def feats_for(stat: Stat, with_lines: bool):
-    return stat.feats + VENUE + (LINE_CTX if with_lines else [])
+    return stat.feats + EXTRA.get(stat.name, []) + VENUE + (LINE_CTX if with_lines else [])
 
 
 def eligible(table: pd.DataFrame, stat: Stat) -> pd.DataFrame:
@@ -60,7 +72,7 @@ def naive_line(stat: Stat, base):
     return np.round(base * 2 - 0.5) / 2 if stat.kind == "cont" else np.floor(np.maximum(base, 0)) + 0.5
 
 
-def walk_forward(table: pd.DataFrame, stat: Stat, first_test=FIRST_TEST, cont_kind="ridge") -> pd.DataFrame:
+def walk_forward(table: pd.DataFrame, stat: Stat, first_test=FIRST_TEST, cont_kind=KIND["cont"]) -> pd.DataFrame:
     t = eligible(table, stat)
     t = t[t[stat.target].notna()]
     outs = []
@@ -77,11 +89,11 @@ def walk_forward(table: pd.DataFrame, stat: Stat, first_test=FIRST_TEST, cont_ki
                     te[f"q{int(q*100)}_{tag}"] = m.quantile(mu, q)
                 te[f"pover_{tag}"] = m.prob_over(mu, naive_line(stat, te[stat.base]))
             elif stat.kind == "count":
-                m = fit_count(tr, f, stat.target); mu = m.mean(te); te[f"mean_{tag}"] = mu
+                m = fit_count(tr, f, stat.target, KIND["count"]); mu = m.mean(te); te[f"mean_{tag}"] = mu
                 te[f"pover_{tag}"] = m.prob_over(mu, naive_line(stat, te[stat.base]))
                 te[f"disp_{tag}"] = m.disp
             else:
-                te[f"prob_{tag}"] = fit_binary(tr, f, stat.target).prob(te)
+                te[f"prob_{tag}"] = fit_binary(tr, f, stat.target, KIND["binary"]).prob(te)
         outs.append(te)
     return pd.concat(outs)
 

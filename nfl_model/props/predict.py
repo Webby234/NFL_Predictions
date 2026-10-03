@@ -4,22 +4,27 @@ import numpy as np, pandas as pd
 from ..betting.odds import american_to_decimal, devig_two_way
 from ..data import load_games, load_passing_games
 from .evaluate import TRAIN_START
-from .features import WITH_LINES, build_qb_prop_table, upcoming_qb_rows
+from .features import BEST, add_skill_inputs, build_qb_prop_table, upcoming_qb_rows
 from .models import QUANTILES, fit_dist
 
 
-def fit_production(table: pd.DataFrame | None = None, feats=WITH_LINES, kind: str = "ridge"):
+def fit_production(table: pd.DataFrame | None = None, feats=BEST, kind: str = "blend"):
     t = build_qb_prop_table() if table is None else table
     tr = t[t.passing_yards.notna() & (t.season >= TRAIN_START)].dropna(subset=["team_implied_r"])
     return fit_dist(tr, feats, kind=kind)
 
 
-def predict_upcoming(week: int | None = None, kind: str = "ridge") -> pd.DataFrame:
+def predict_upcoming(week: int | None = None, kind: str = "blend", skill_table: pd.DataFrame | None = None) -> pd.DataFrame:
+    """`skill_table`: the skill-player table that already includes this week's upcoming rows (built if not given)."""
     games, passing = load_games(), load_passing_games()
     rows = upcoming_qb_rows(games, passing, week)
     if rows.empty:
         return rows
-    model = fit_production(kind=kind)
+    if skill_table is None:
+        from .skill_predict import upcoming_table
+        skill_table, _ = upcoming_table(week)
+    rows = add_skill_inputs(rows, skill_table)
+    model = fit_production(build_qb_prop_table(skill_table=skill_table), kind=kind)
     rows = rows.dropna(subset=["team_implied_r"]).copy()
     mu = model.mean(rows)
     rows["pred_yards"] = mu

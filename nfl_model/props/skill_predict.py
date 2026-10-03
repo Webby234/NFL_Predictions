@@ -6,7 +6,7 @@ from ..data import load_games, load_skill_games
 from ..features.team_features import TEAM_CODE_FIX
 from .models import QUANTILES, fit_binary, fit_count, fit_dist
 from .skill import build_skill_table
-from .skill_eval import STATS, TRAIN_START, eligible, feats_for, naive_line
+from .skill_eval import KIND, STATS, TRAIN_START, eligible, feats_for, naive_line
 
 RECENT_WEEKS = 4
 RAW = ["player_id", "player_display_name", "position", "season", "week", "team", "opponent_team", "carries",
@@ -61,10 +61,10 @@ def fit_production(table: pd.DataFrame, stat, with_lines=True):
     tr = t[t[stat.target].notna() & (t.season >= TRAIN_START)]
     f = feats_for(stat, with_lines)
     if stat.kind == "cont":
-        return fit_dist(tr, f, stat.target, "ridge", floor=stat.floor)
+        return fit_dist(tr, f, stat.target, KIND["cont"], floor=stat.floor)
     if stat.kind == "count":
-        return fit_count(tr, f, stat.target)
-    return fit_binary(tr, f, stat.target)
+        return fit_count(tr, f, stat.target, KIND["count"])
+    return fit_binary(tr, f, stat.target, KIND["binary"])
 
 
 def upcoming_table(week: int | None = None):
@@ -72,8 +72,9 @@ def upcoming_table(week: int | None = None):
     ph = placeholder_rows(games, skill, week)
     if ph.empty:
         return None, None
-    from ..data import load_players, load_snap_counts
-    table = build_skill_table(games, pd.concat([skill, ph], ignore_index=True), load_snap_counts(), load_players())
+    from ..data import load_injuries, load_players, load_snap_counts
+    table = build_skill_table(games, pd.concat([skill, ph], ignore_index=True), load_snap_counts(), load_players(),
+                              load_injuries())
     up = table[(table.season == ph.season.iloc[0]) & (table.week == ph.week.iloc[0]) & table.rushing_yards.isna()]
     return table, up
 
