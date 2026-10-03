@@ -16,12 +16,16 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from nfl_model.config import HOSTED
 from nfl_model.ui import board as B, lines_store, render as R, tracker
 
 st.set_page_config(page_title="NFL betting board", page_icon="🏈", layout="wide", initial_sidebar_state="collapsed")
 st.markdown(R.style_tag(), unsafe_allow_html=True)
 
 SHOW = 25      # players listed before "show all"
+# On a shared host, typed-in lines live in the visitor's own session; on your computer they are saved to lines/.
+STORE = st.session_state if HOSTED else None
+KEPT = " Your lines stay in this browser tab only and are cleared when you close it." if HOSTED else ""
 
 
 def html(s: str) -> None:
@@ -70,9 +74,9 @@ def line_editor(stat: str, df: pd.DataFrame, saved: pd.DataFrame, yes_only: bool
     else:
         table["Line"], table["Over odds"], table["Under odds"] = look("line"), look("over_odds"), look("under_odds")
     with st.expander("Add your sportsbook's lines"):
-        st.caption("Type the odds your sportsbook offers for a touchdown (for example -130 or +145), then save."
+        st.caption("Type the odds your sportsbook offers for a touchdown (for example -130 or +145), then save." + KEPT
                    if yes_only else
-                   "Type your sportsbook's line next to a player, then save. Leave the odds blank to use -110.")
+                   "Type your sportsbook's line next to a player, then save. Leave the odds blank to use -110." + KEPT)
         num = {c: st.column_config.NumberColumn(c, step=0.5 if c == "Line" else 1) for c in table.columns[2:]}
         edited = st.data_editor(table.reset_index(drop=True), hide_index=True, disabled=["Player", "Team"],
                                 column_config=num, use_container_width=True, key=f"ed_{stat}")
@@ -81,7 +85,7 @@ def line_editor(stat: str, df: pd.DataFrame, saved: pd.DataFrame, yes_only: bool
                                  "line": None if yes_only else edited["Line"],
                                  "over_odds": edited["Odds"] if yes_only else edited["Over odds"],
                                  "under_odds": None if yes_only else edited["Under odds"]})
-            n = lines_store.save(board["season"], board["week"], stat, rows)
+            n = lines_store.save(board["season"], board["week"], stat, rows, store=STORE)
             st.session_state["saved_msg"] = f"Saved {n} line{'s' if n != 1 else ''}."
             st.rerun()
 
@@ -95,18 +99,18 @@ def game_line_editor(board: dict, games: list[dict]) -> None:
     listed = pd.DataFrame([{"game_id": g["game_id"], **g["listed"]} for g in games])
     with st.expander("Enter your sportsbook's lines"):
         st.caption("These start as the listed lines. Change any number to what your sportsbook offers, then save. "
-                   "Home spread is the home team's number, for example -2.5. Half a point in your favor is worth a lot.")
+                   "Home spread is the home team's number, for example -2.5. Half a point in your favor is worth a lot." + KEPT)
         cfg = {v: st.column_config.NumberColumn(v, step=0.5 if k in ("home_spread", "total") else 1) for k, v in names.items()}
         edited = st.data_editor(current, hide_index=True, disabled=["Game"], column_config=cfg,
                                 use_container_width=True, key="ed_games")
         c1, c2 = st.columns([1, 5])
         if c1.button("Save lines", key="save_games"):
             out = edited.rename(columns={v: k for k, v in names.items()}).assign(game_id=listed.game_id.values)
-            n = lines_store.save_game_lines(board["season"], board["week"], out, listed)
+            n = lines_store.save_game_lines(board["season"], board["week"], out, listed, store=STORE)
             st.session_state["saved_msg"] = f"Using your lines for {n} game{'s' if n != 1 else ''}."
             st.rerun()
         if any(g.get("yours") for g in games) and c2.button("Go back to the listed lines", key="reset_games"):
-            lines_store.save_game_lines(board["season"], board["week"], listed, listed)
+            lines_store.save_game_lines(board["season"], board["week"], listed, listed, store=STORE)
             st.session_state["saved_msg"] = "Back to the listed lines."
             st.rerun()
 
@@ -117,8 +121,8 @@ if not board["games"]:
     st.stop()
 
 props = board["props"]
-games = B.apply_book_lines(board["games"], lines_store.load_game_lines(board["season"], board["week"]))
-saved = lines_store.load(board["season"], board["week"])
+games = B.apply_book_lines(board["games"], lines_store.load_game_lines(board["season"], board["week"], store=STORE))
+saved = lines_store.load(board["season"], board["week"], store=STORE)
 prop_bets = B.price_prop_lines(props, saved, games)
 of = lambda stat: [b for b in prop_bets if b.get("stat") == stat]
 if "saved_msg" in st.session_state:
@@ -133,10 +137,11 @@ with home:
     top = B.top_bets(B.game_bets(games) + prop_bets)
     html(R.top_list(top[:3], games))
     if len(top) > 3:
-        html(R.section("The next seven", "Smaller edges. On past seasons these roughly broke even."))
+        html(R.section("The next seven", "Smaller edges than the three above."))
         html(R.top_list(top[3:], games, start=4))
     try:                                   # keep a record of what was recommended; never let it break the page
-        tracker.log(board, top, prop_bets)
+        if not HOSTED:                 # a shared host has no private disk to keep a log on
+            tracker.log(board, top, prop_bets)
         record = get_record()
     except Exception:
         record = ""
@@ -144,13 +149,9 @@ with home:
         html(R.note(f"<b>Track record.</b> {record}"))
     html(R.note("<b>How to read it.</b> The yellow line is how often a bet has to win to break even at that price. "
                 "The dot is how often the model expects it to win. Green past the line is edge; grey means it falls short."))
-    html(R.note("<b>Keep it in proportion.</b> On past seasons this model has not beaten sportsbook prices after the "
-                "vig, so the win chances shown are already pulled most of the way toward the sportsbook's. "
-                "Use the list as leads to look into, not sure things."))
     if not prop_bets:
         html(R.note("Player props and touchdowns join this list once you add your sportsbook's lines on those tabs."))
-    html(R.note("Moneyline underdogs are left off this list. They were its weakest picks on past seasons. "
-                "You can still see them on the Moneyline & Spread tab."))
+    html(R.note("Moneyline underdogs are left off this list. You can still see them on the Moneyline & Spread tab."))
 
 with lines_tab:
     html(R.section("Every game this week",
@@ -236,8 +237,7 @@ with acc_tab:
     elif hist and view == "Moneyline & Spread":
         html(R.section("Model's pick in every game", "Wins and losses for the green-box pick in each market. Pushes are left out."))
         html(R.simple_table(hist["Moneyline & Spread"]))
-        html(R.note("A spread or total bet at the usual -110 has to win about 52.4% of the time to break even. "
-                    "Moneyline picks are mostly favorites, so a high win rate there does not mean profit."))
+        html(R.note("A spread or total bet at the usual -110 has to win about 52.4% of the time to break even."))
     elif hist and view == "Player Props":
         for title in ("Passing yards", "Rushing yards", "Receiving yards"):
             html(R.section(title, "Average miss is how far the projection was from the real number, in yards."))

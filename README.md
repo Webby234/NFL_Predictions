@@ -14,6 +14,7 @@ It runs on your own computer, uses free public data, and needs no account or API
 - [Quick start](#quick-start)
 - [Using the app each week](#using-the-app-each-week)
 - [How to read the pages](#how-to-read-the-pages)
+- [Hosting it for others](#hosting-it-for-others)
 - [Command line reference](#command-line-reference)
 - [Where your files live](#where-your-files-live)
 - [How it works](#how-it-works)
@@ -122,6 +123,27 @@ lower, under if it is higher.
 
 **Home spread** in the lines table is the home team's number as a sportsbook shows it: `-2.5` means the home team
 is favored by 2.5.
+
+## Hosting it for others
+
+The app can run on [Streamlit Community Cloud](https://streamlit.io/cloud) so other people can open it with a link.
+
+1. Push this project to a GitHub repository.
+2. Go to <https://share.streamlit.io>, sign in with GitHub, and choose **Create app**.
+3. Pick the repository and branch, set the main file to `model.py`, and deploy.
+4. Wait for the first build. It installs the packages and downloads the data, which takes several minutes.
+
+How the hosted version differs from running it yourself:
+
+- **Lines are private to each visitor.** Numbers someone types in stay in their own browser tab and are cleared when
+  they close it. One visitor never changes the board for another.
+- **Nothing is saved on the host.** The pick log is not written there. If `lines/picks_log.csv` is in the repository,
+  the hosted app shows the record from it, so you can keep the log on your own computer and publish it with the code.
+- **It sleeps.** After 12 hours without visitors the app goes to sleep. The next visitor clicks to wake it and waits
+  a few minutes.
+- **Memory.** The app peaks at roughly 450 MB while building the week's board.
+
+To try hosted behavior on your own computer, set the environment variable `NFL_BOARD_HOSTED=1` before starting the app.
 
 ## Command line reference
 

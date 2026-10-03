@@ -234,6 +234,35 @@ def test_log_keeps_finished_games_and_replaces_live_ones():
         tracker.PATH = old
 
 
+def test_hosted_lines_stay_in_the_visitors_session_and_off_the_disk():
+    import pathlib, tempfile
+    old = (lines_store.PATH, lines_store.GAME_PATH)
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    lines_store.PATH, lines_store.GAME_PATH = tmp / "lines" / "prop_lines.csv", tmp / "lines" / "game_lines.csv"
+    try:
+        alice, bob = {}, {}
+        rows = pd.DataFrame(dict(player=["A"], line=[70.5], over_odds=[-110], under_odds=[-110]))
+        assert lines_store.save(2026, 4, "rush_yds", rows, store=alice) == 1
+        listed = pd.DataFrame([dict(game_id="g1", **_game()["listed"])])
+        edited = listed.copy(); edited.loc[0, "home_spread"] = 3.0
+        assert lines_store.save_game_lines(2026, 4, edited, listed, store=alice) == 1
+        assert len(lines_store.load(2026, 4, store=alice)) == 1 and len(lines_store.load_game_lines(2026, 4, store=alice)) == 1
+        assert lines_store.load(2026, 4, store=bob).empty and lines_store.load_game_lines(2026, 4, store=bob).empty
+        assert not (tmp / "lines").exists()                              # nothing touched the shared disk
+        assert lines_store.load(2026, 4).empty                           # and the file-based store is unaffected
+    finally:
+        lines_store.PATH, lines_store.GAME_PATH = old
+
+
+def test_hosted_flag_follows_the_environment():
+    import importlib, os, nfl_model.config as C
+    try:
+        os.environ["NFL_BOARD_HOSTED"] = "1"; assert importlib.reload(C).HOSTED
+        os.environ["NFL_BOARD_HOSTED"] = "0"; assert not importlib.reload(C).HOSTED
+    finally:
+        os.environ.pop("NFL_BOARD_HOSTED", None); importlib.reload(C)
+
+
 def test_timestamp_uses_no_platform_specific_codes():
     import inspect
     assert B._stamp(pd.Timestamp("2026-10-02 19:09")) == "Oct 2, 7:09 PM"

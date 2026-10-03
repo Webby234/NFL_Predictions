@@ -1,9 +1,15 @@
 """Project-wide paths and constants."""
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"          # cached downloads (git-ignored)
 REPORT_DIR = ROOT / "reports"     # backtest outputs
+
+# True when the app runs on a shared host (Streamlit Community Cloud mounts the repo under /mount/src), or when
+# NFL_BOARD_HOSTED=1 is set. Hosted: lines a visitor types stay in that visitor's session and nothing is written
+# to disk on their behalf, because the disk is shared by every visitor and wiped on restart.
+HOSTED = os.environ.get("NFL_BOARD_HOSTED", "") == "1" or ROOT.as_posix().startswith("/mount/src")
 
 TRAIN_START = 2006     # first season used for training (Elo/EWMA warm up from 1999)
 FIRST_TEST = 2015      # first walk-forward test season
